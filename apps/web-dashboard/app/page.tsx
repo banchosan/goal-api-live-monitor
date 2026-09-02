@@ -146,7 +146,7 @@ function UpcomingBoard({ fixtures, loading, onRest }: { fixtures: UpcomingFixtur
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisMessage, setAnalysisMessage] = useState('');
   const [candidates, setCandidates] = useState<FormCandidate[]>([]);
-  const shown = scope === 'big5' ? fixtures.filter(isBigFiveTopTwo) : fixtures;
+  const shown = scope === 'big5' ? fixtures.filter(isSelectedLeague) : fixtures;
   const uniqueTeams = new Set(shown.flatMap((fixture) => [fixture.homeTeamId, fixture.awayTeamId]).filter(Boolean)).size;
 
   async function analyzeForm() {
@@ -165,9 +165,9 @@ function UpcomingBoard({ fixtures, loading, onRest }: { fixtures: UpcomingFixtur
 
   return <section className="upcoming-stage">
     {!fixtures.length ? <div className="hero-empty upcoming-empty"><div className="pulse-rings"><span /><span /><b>24h</b></div><h2>{loading ? '試合一覧を取得しています' : 'まだ試合を取得していません'}</h2><p>取得ボタン1回で、現在時刻から24時間以内にキックオフする試合だけを表示します。</p></div> : <>
-      <div className="scope-panel"><div><button className={scope === 'big5' ? 'active' : ''} onClick={() => { setScope('big5'); setCandidates([]); setAnalysisMessage(''); }}>5大リーグ 1部・2部</button><button className={scope === 'all' ? 'active' : ''} onClick={() => { setScope('all'); setCandidates([]); setAnalysisMessage(''); }}>全試合</button></div><button className="analyze-button" disabled={analyzing || !shown.length || uniqueTeams > 250} onClick={analyzeForm}>{analyzing ? '分析中…' : `直近5試合を分析（最大 ${uniqueTeams} REST）`}</button></div>
+      <div className="scope-panel"><div><button className={scope === 'big5' ? 'active' : ''} onClick={() => { setScope('big5'); setCandidates([]); setAnalysisMessage(''); }}>指定リーグ</button><button className={scope === 'all' ? 'active' : ''} onClick={() => { setScope('all'); setCandidates([]); setAnalysisMessage(''); }}>全試合</button></div><button className="analyze-button" disabled={analyzing || !shown.length || uniqueTeams > 250} onClick={analyzeForm}>{analyzing ? '分析中…' : `直近5試合を分析（最大 ${uniqueTeams} REST）`}</button></div>
       <div className="scope-note">絞り込みは取得済みfixture内で行うため追加REST 0。直近成績はユニークteamごとに1 RESTです。</div>
-      <div className="upcoming-summary"><span>{scope === 'big5' ? 'BIG FIVE · TOP TWO DIVISIONS' : 'UPCOMING FIXTURES'}</span><strong>{shown.length}</strong><small>現在時刻から24時間以内・JST順 · {uniqueTeams}チーム</small></div>
+      <div className="upcoming-summary"><span>{scope === 'big5' ? 'SELECTED LEAGUES' : 'UPCOMING FIXTURES'}</span><strong>{shown.length}</strong><small>現在時刻から24時間以内・JST順 · {uniqueTeams}チーム</small></div>
       {analysisMessage && <div className="analysis-message">{analysisMessage}</div>}
       {candidates.length > 0 && <section className="candidate-section"><div className="candidate-title"><span>WATCH CANDIDATES</span><strong>直近5試合で4勝以上</strong></div><div className="candidate-grid">{candidates.map((candidate) => <article className="candidate-card" key={`${candidate.fixtureId}-${candidate.team}`}><div><time>{candidate.kickoffJst} JST</time><b>{candidate.wins}/5 WINS</b></div><h3>{candidate.team}</h3><p>{candidate.side.toUpperCase()} vs {candidate.opponent}</p><small>{candidate.country} · {candidate.league}</small><div className="form-strip">{candidate.last5.map((result, index) => <span className={result.result.toLowerCase()} title={`${result.opponent} ${result.score}`} key={`${result.fixtureId}-${index}`}>{result.result}</span>)}</div></article>)}</div></section>}
       <div className="upcoming-list">{shown.map((fixture) => <article className="upcoming-row" key={fixture.id}>
@@ -179,15 +179,23 @@ function UpcomingBoard({ fixtures, loading, onRest }: { fixtures: UpcomingFixtur
   </section>;
 }
 
-function isBigFiveTopTwo(fixture: UpcomingFixture) {
+function isSelectedLeague(fixture: UpcomingFixture) {
   const country = normalize(fixture.country);
   const league = normalize(fixture.league).replace(/\s+-\s+.*$/, '');
   const exact: Record<string, string[]> = {
     england: ['premier league', 'championship'],
     spain: ['la liga', 'laliga', 'primera division', 'segunda division', 'la liga 2', 'laliga2'],
-    italy: ['serie a', 'serie b'],
+    italy: ['serie a', 'serie b', 'coppa italia'],
     germany: ['bundesliga', '2. bundesliga'],
     france: ['ligue 1', 'ligue 2'],
+    iran: ['persian gulf pro league', 'pro league'],
+    'saudi arabia': ['first division', 'division 1', '1st division', 'first league', 'yelo league'],
+    bulgaria: ['first league'],
+    austria: ['bundesliga'],
+    denmark: ['superliga'],
+    belgium: ['first division a', 'pro league'],
+    switzerland: ['super league'],
+    scotland: ['premiership'],
   };
   return (exact[country] ?? []).includes(league);
 }

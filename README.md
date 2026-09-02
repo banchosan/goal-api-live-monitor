@@ -14,7 +14,7 @@ Web画面上部のタブで、次の2画面を切り替えられます。
 - `ライブ監視`: ライブfixtureを選択してWebSocket監視
 - `今後24時間`: 現在時刻から24時間以内に始まる全fixtureをJST順で表示
 
-`今後24時間`では、取得済みfixtureを追加RESTなしで「5大リーグの1部・2部」に絞り込めます。分析ボタンを押すと、対象のユニークteamごとに `/teams/:id/results?limit=5` を1回取得し、直近5試合で4勝以上のteamを監視候補として表示します。実行前に最大REST数をボタン上で確認できます。
+`今後24時間`では、取得済みfixtureを追加RESTなしで「指定リーグ」に絞り込めます。対象は5大リーグの1部・2部に加え、イランPro League、サウジアラビア2部、Coppa Italia、ブルガリアFirst League、オーストリアBundesliga、デンマークSuperliga、ベルギーFirst Division A、スイスSuper League、スコットランドPremiershipです。分析ボタンを押すと、対象のユニークteamごとに `/teams/:id/results?limit=5` を1回取得し、直近5試合で4勝以上のteamを監視候補として表示します。実行前に最大REST数をボタン上で確認できます。
 
 ## 起動
 
