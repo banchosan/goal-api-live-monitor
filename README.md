@@ -9,6 +9,11 @@ GOAL API Freeプランを使った、ライブ試合一覧・WebSocket statistic
 - APIキー: ルートの `.env` に `GOAL_API_KEY=...`
 - 取得ログ: `data/goal_api_test/`
 
+Web画面上部のタブで、次の2画面を切り替えられます。
+
+- `ライブ監視`: ライブfixtureを選択してWebSocket監視
+- `今後24時間`: 現在時刻から24時間以内に始まる全fixtureをJST順で表示
+
 ## 起動
 
 Finderから `start.command` をダブルクリックします。または:
@@ -46,6 +51,8 @@ goal-api-live-monitor/
 ## 確認済み仕様
 
 - `/fixtures/live` は試合数に関係なく1 REST request
+- 今後24時間は `/fixtures?from=...&to=...&status=SCHEDULED` を取得後、`kickoffUtc`で厳密に絞り込む
+- `/fixtures` の実API上の `limit` は最大100件（公開OpenAPIの500件表記とは不一致）
 - Freeプラン実測: 1 WebSocket connection / 最大25 match subscriptions
 - WebSocket `match_update`受信は日次1,000 REST quotaを消費しない
 - `/ws/token` は日次1,000件とは別のrate-limit bucket

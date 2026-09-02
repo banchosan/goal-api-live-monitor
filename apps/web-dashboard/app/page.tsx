@@ -3,16 +3,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 type Fixture = { id: string; league: string; country: string; home: string; away: string; homeScore: string; awayScore: string; status: string };
+type UpcomingFixture = { id: string; league: string; country: string; home: string; away: string; kickoffUtc: string; kickoffJst: string; status: string };
 type Stat = { type: string; home: string | number | null; away: string | number | null };
 type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; updates: number; htStats?: Stat[]; sixtyStats?: Stat[]; sixtyMinute?: number };
 const WS_URL = 'wss://api.goal-api.com/ws';
 
 export default function Home() {
+  const [viewMode, setViewMode] = useState<'live' | 'upcoming'>('live');
   const [fixtures, setFixtures] = useState<Fixture[]>([]);
+  const [upcomingFixtures, setUpcomingFixtures] = useState<UpcomingFixture[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [matches, setMatches] = useState<Record<string, LiveMatch>>({});
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
+  const [upcomingLoading, setUpcomingLoading] = useState(false);
+  const [upcomingMessage, setUpcomingMessage] = useState('「今後24時間を取得」を押してください');
   const [connection, setConnection] = useState<'idle' | 'connecting' | 'live' | 'error'>('idle');
   const [message, setMessage] = useState('「ライブ試合を取得」を押してください');
   const [restCount, setRestCount] = useState(0);
@@ -33,6 +38,19 @@ export default function Home() {
       setFixtures(data.fixtures); setMessage(`${data.fixtures.length}試合を取得しました。監視する試合を選択してください。`);
     } catch (error) { setMessage(error instanceof Error ? error.message : '取得エラー'); }
     finally { setLoading(false); }
+  }
+
+  async function loadUpcomingFixtures() {
+    setUpcomingLoading(true); setUpcomingMessage('GOAL APIから今後24時間の試合を取得中…');
+    try {
+      const response = await fetch('/api/upcoming', { cache: 'no-store' });
+      const data = await response.json();
+      setRestCount((v) => v + Number(data.apiRequests ?? 1));
+      if (!response.ok) throw new Error(data.error || '今後24時間の試合を取得できませんでした');
+      setUpcomingFixtures(data.fixtures ?? []);
+      setUpcomingMessage(`${data.fixtures.length}試合を取得しました（GOAL API ${data.apiRequests} REST request）。`);
+    } catch (error) { setUpcomingMessage(error instanceof Error ? error.message : '取得エラー'); }
+    finally { setUpcomingLoading(false); }
   }
 
   function toggle(id: string) { setSelected((now) => now.includes(id) ? now.filter((v) => v !== id) : now.length < 25 ? [...now, id] : now); }
@@ -103,11 +121,12 @@ export default function Home() {
       <div className="health"><span className={`dot ${connection}`} />{connection === 'live' ? 'LIVE CONNECTED' : connection === 'connecting' ? 'CONNECTING' : connection === 'error' ? 'CONNECTION ERROR' : 'SOCKET OFF'}</div>
       <div className="quota"><span>REST USED</span><strong>{restCount}</strong><small>WS frames {frameCount}</small></div>
     </header>
-    <section className="commandbar"><div><h1>ライブ試合を選んで、リアルタイムで見る。</h1><p>{message}</p></div><div className="actions">
-      <button className="secondary" onClick={loadFixtures} disabled={loading}>{loading ? '取得中…' : fixtures.length ? '一覧を更新（1 REST）' : 'ライブ試合を取得（1 REST）'}</button>
-      {connection === 'live' ? <><button className="primary" onClick={addSelectedMatches} disabled={!addableIds.length || !availableSlots}>選択から{addableIds.length}試合を追加</button><button className="danger" onClick={stopMonitoring}>監視を停止</button></> : connection === 'connecting' ? <button className="danger" onClick={stopMonitoring}>接続を中止</button> : <button className="primary" onClick={startMonitoring} disabled={!selected.length}>選択した{selected.length}試合を監視</button>}
+    <nav className="view-tabs" aria-label="表示切替"><button className={viewMode === 'live' ? 'active' : ''} onClick={() => setViewMode('live')}>ライブ監視</button><button className={viewMode === 'upcoming' ? 'active' : ''} onClick={() => setViewMode('upcoming')}>今後24時間</button></nav>
+    <section className="commandbar"><div><h1>{viewMode === 'live' ? 'ライブ試合を選んで、リアルタイムで見る。' : 'これから24時間以内に始まる全試合。'}</h1><p>{viewMode === 'live' ? message : upcomingMessage}</p></div><div className="actions">
+      {viewMode === 'live' ? <><button className="secondary" onClick={loadFixtures} disabled={loading}>{loading ? '取得中…' : fixtures.length ? '一覧を更新（1 REST）' : 'ライブ試合を取得（1 REST）'}</button>
+      {connection === 'live' ? <><button className="primary" onClick={addSelectedMatches} disabled={!addableIds.length || !availableSlots}>選択から{addableIds.length}試合を追加</button><button className="danger" onClick={stopMonitoring}>監視を停止</button></> : connection === 'connecting' ? <button className="danger" onClick={stopMonitoring}>接続を中止</button> : <button className="primary" onClick={startMonitoring} disabled={!selected.length}>選択した{selected.length}試合を監視</button>}</> : <button className="primary" onClick={loadUpcomingFixtures} disabled={upcomingLoading}>{upcomingLoading ? '取得中…' : upcomingFixtures.length ? '24時間一覧を更新' : '今後24時間を取得'}</button>}
     </div></section>
-    <div className="workspace">
+    {viewMode === 'live' ? <div className="workspace">
       <aside className="match-picker"><div className="picker-head"><div><span className="eyebrow">LIVE MATCHES</span><strong>{fixtures.length}</strong></div><span className="selection-count">{selected.length}/25 選択</span></div>
         <input aria-label="試合検索" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="チーム・リーグを検索" />
         <div className="fixture-list">{!fixtures.length && <div className="empty"><span>◉</span><p>まだ一覧を取得していません</p><small>一覧取得は1 REST requestです</small></div>}
@@ -117,8 +136,21 @@ export default function Home() {
       <section className="score-stage">{!Object.keys(matches).length && <div className="hero-empty"><div className="pulse-rings"><span /><span /><b>⚽</b></div><h2>試合を選択してください</h2><p>左のライブ一覧から最大25試合を選び、1本のSocketで同時監視できます。</p><div className="flow"><span>LIVE LIST<small>1 REST</small></span><i>→</i><span>SELECT<small>最大25試合</small></span><i>→</i><span>WEBSOCKET<small>更新消費 0</small></span></div></div>}
         <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} />)}</div>
       </section>
-    </div>
+    </div> : <UpcomingBoard fixtures={upcomingFixtures} loading={upcomingLoading} />}
   </main>;
+}
+
+function UpcomingBoard({ fixtures, loading }: { fixtures: UpcomingFixture[]; loading: boolean }) {
+  return <section className="upcoming-stage">
+    {!fixtures.length ? <div className="hero-empty upcoming-empty"><div className="pulse-rings"><span /><span /><b>24h</b></div><h2>{loading ? '試合一覧を取得しています' : 'まだ試合を取得していません'}</h2><p>取得ボタン1回で、現在時刻から24時間以内にキックオフする試合だけを表示します。</p></div> : <>
+      <div className="upcoming-summary"><span>UPCOMING FIXTURES</span><strong>{fixtures.length}</strong><small>現在時刻から24時間以内・JST順</small></div>
+      <div className="upcoming-list">{fixtures.map((fixture) => <article className="upcoming-row" key={fixture.id}>
+        <time dateTime={fixture.kickoffUtc}><strong>{fixture.kickoffJst}</strong><small>JST</small></time>
+        <div className="upcoming-teams"><span>{fixture.home}</span><i>vs</i><span>{fixture.away}</span></div>
+        <div className="upcoming-meta"><strong>{fixture.country}</strong><span>{fixture.league}</span><code>{fixture.id}</code></div>
+      </article>)}</div>
+    </>}
+  </section>;
 }
 
 function MatchCard({ match }: { match: LiveMatch }) {
