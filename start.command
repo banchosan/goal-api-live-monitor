@@ -2,6 +2,15 @@
 set -e
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WEB_DIR="$PROJECT_DIR/apps/web-dashboard"
+if [[ ! -f "$PROJECT_DIR/.env" ]]; then
+  echo "エラー: $PROJECT_DIR/.env がありません"
+  echo ".env.exampleをコピーしてGOAL_API_KEYを設定してください。"
+  read -k 1 "?何かキーを押すと終了します…"
+  exit 1
+fi
+set -a
+source "$PROJECT_DIR/.env"
+set +a
 cd "$WEB_DIR"
 if [[ ! -d node_modules ]]; then
   echo "初回セットアップ中です…"
