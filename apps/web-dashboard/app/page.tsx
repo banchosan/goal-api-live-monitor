@@ -6,7 +6,9 @@ type Fixture = { id: string; league: string; country: string; home: string; away
 type UpcomingFixture = { id: string; league: string; country: string; home: string; away: string; homeTeamId: string; awayTeamId: string; kickoffUtc: string; kickoffJst: string; status: string };
 type FormCandidate = { kickoffUtc: string; kickoffJst: string; league: string; country: string; fixtureId: string; team: string; side: 'home' | 'away'; opponent: string; wins: number; last5: { result: string; score: string; opponent: string; fixtureId: string }[] };
 type Stat = { type: string; home: string | number | null; away: string | number | null };
-type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; updates: number; htStats?: Stat[]; sixtyStats?: Stat[]; sixtyMinute?: number };
+type ManualSnapshot = { id: string; status: string; capturedAt: string; stats: Stat[] };
+type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; updates: number; htStats?: Stat[]; sixtyStats?: Stat[]; sixtyMinute?: number; snapshots: ManualSnapshot[]; selectedSnapshotId?: string };
+type MonitorEvent = { sessionId: string; fixtureId: string; eventType: string; receivedAt: string; status?: string; home?: string; away?: string; homeScore?: string; awayScore?: string; payload: unknown };
 const WS_URL = 'wss://api.goal-api.com/ws';
 
 export default function Home() {
@@ -24,6 +26,8 @@ export default function Home() {
   const [restCount, setRestCount] = useState(0);
   const [frameCount, setFrameCount] = useState(0);
   const socketRef = useRef<WebSocket | null>(null);
+  const sessionIdRef = useRef('');
+  const matchesRef = useRef<Record<string, LiveMatch>>({});
   const visible = useMemo(() => fixtures.filter((f) => `${f.home} ${f.away} ${f.league} ${f.country}`.toLowerCase().includes(query.toLowerCase())), [fixtures, query]);
   const additionalIds = selected.filter((id) => !matches[id]);
   const availableSlots = Math.max(0, 25 - Object.keys(matches).length);
@@ -58,8 +62,11 @@ export default function Home() {
 
   async function startMonitoring() {
     if (!selected.length) return;
+    sessionIdRef.current = `${Date.now()}-${crypto.randomUUID()}`;
     socketRef.current?.close(); setConnection('connecting'); setMessage('WebSocketへ接続中…');
-    setMatches(Object.fromEntries(selected.map((id) => { const f = fixtures.find((x) => x.id === id)!; return [id, { ...f, stats: [], updates: 0 }]; })));
+    const initialMatches = Object.fromEntries(selected.map((id) => { const f = fixtures.find((x) => x.id === id)!; return [id, { ...f, stats: [], updates: 0, snapshots: [] }]; }));
+    setMatches(initialMatches);
+    persistEvents(Object.values(initialMatches).map((match) => eventFromMatch(sessionIdRef.current, match, 'session_start', { selectedAt: new Date().toISOString() })));
     try {
       const response = await fetch('/api/ws-token', { method: 'POST' }); setRestCount((v) => v + 1);
       const body = await response.json();
@@ -72,6 +79,9 @@ export default function Home() {
         if (payload.type === 'subscribe_response') { if (payload.success) { setConnection('live'); setMessage(`${selected.length}試合をWebSocket監視中。受信フレームのREST消費は0です。`); } return; }
         if (payload.type !== 'match_update') return;
         const data = payload.data ?? {}; const id = data.id ?? data.fixture_id ?? data.fixtureId;
+        const receivedAt = new Date().toISOString();
+        const knownMatch = matchesRef.current[id];
+        if (knownMatch) persistEvents([eventFromMatch(sessionIdRef.current, { ...knownMatch, status: String(data.match_status ?? knownMatch.status), home: data.match_hometeam_name ?? knownMatch.home, away: data.match_awayteam_name ?? knownMatch.away, homeScore: data.match_hometeam_score ?? knownMatch.homeScore, awayScore: data.match_awayteam_score ?? knownMatch.awayScore }, 'match_update', payload, receivedAt)]);
         setMatches((now) => {
           if (!now[id]) return now;
           const previous = now[id];
@@ -82,7 +92,6 @@ export default function Home() {
           const isHalfTime = ['HT', 'HALF_TIME', 'HALF TIME'].includes(nextStatus.toUpperCase());
           let htStats = previous.htStats;
           if (isHalfTime && nextStats.length) htStats = nextStats;
-          else if (minute !== null && minute <= 45 && nextStats.length) htStats = nextStats;
           else if (!htStats && minute !== null && minute >= 46 && previousMinute !== null && previousMinute <= 45 && previous.stats.length) htStats = previous.stats;
           let sixtyStats = previous.sixtyStats;
           let sixtyMinute = previous.sixtyMinute;
@@ -101,10 +110,11 @@ export default function Home() {
     setMatches((now) => {
       const additions = Object.fromEntries(addableIds.map((id) => {
         const fixture = fixtures.find((item) => item.id === id)!;
-        return [id, { ...fixture, stats: [], updates: 0 }];
+        return [id, { ...fixture, stats: [], updates: 0, snapshots: [] }];
       }));
       return { ...now, ...additions };
     });
+    persistEvents(addableIds.map((id) => eventFromMatch(sessionIdRef.current, { ...fixtures.find((item) => item.id === id)!, stats: [], updates: 0, snapshots: [] }, 'session_add', { addedAt: new Date().toISOString() })));
     addableIds.forEach((id) => socket.send(JSON.stringify({ type: 'subscribe', resource: 'match', matchId: id })));
     setMessage(`${addableIds.length}試合を現在のWebSocket監視へ追加しました。REST消費は0です。`);
   }
@@ -112,8 +122,27 @@ export default function Home() {
   function stopMonitoring() {
     const socket = socketRef.current;
     if (socket) Object.keys(matches).forEach((id) => socket.send(JSON.stringify({ type: 'unsubscribe', resource: 'match', matchId: id })));
+    persistEvents(Object.values(matchesRef.current).map((match) => eventFromMatch(sessionIdRef.current, match, 'session_stop', { stoppedAt: new Date().toISOString() })));
     socket?.close(1000, 'user stopped'); socketRef.current = null; setConnection('idle'); setMessage('監視を停止しました');
   }
+
+  function captureSnapshot(id: string) {
+    const match = matchesRef.current[id];
+    if (!match || !match.stats.length) return;
+    const capturedAt = new Date().toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' });
+    const snapshot: ManualSnapshot = { id: `${Date.now()}-${match.snapshots.length}`, status: match.status, capturedAt, stats: match.stats.map((stat) => ({ ...stat })) };
+    setMatches((now) => ({ ...now, [id]: { ...now[id], snapshots: [...now[id].snapshots, snapshot], selectedSnapshotId: snapshot.id } }));
+    persistEvents([eventFromMatch(sessionIdRef.current, match, 'manual_snapshot', snapshot)]);
+  }
+
+  function selectSnapshot(id: string, snapshotId: string) {
+    setMatches((now) => {
+      const match = now[id];
+      if (!match) return now;
+      return { ...now, [id]: { ...match, selectedSnapshotId: match.selectedSnapshotId === snapshotId ? undefined : snapshotId } };
+    });
+  }
+  useEffect(() => { matchesRef.current = matches; }, [matches]);
   useEffect(() => () => socketRef.current?.close(), []);
 
   return <main className="app-shell">
@@ -135,7 +164,7 @@ export default function Home() {
         </div>
       </aside>
       <section className="score-stage">{!Object.keys(matches).length && <div className="hero-empty"><div className="pulse-rings"><span /><span /><b>⚽</b></div><h2>試合を選択してください</h2><p>左のライブ一覧から最大25試合を選び、1本のSocketで同時監視できます。</p><div className="flow"><span>LIVE LIST<small>1 REST</small></span><i>→</i><span>SELECT<small>最大25試合</small></span><i>→</i><span>WEBSOCKET<small>更新消費 0</small></span></div></div>}
-        <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} />)}</div>
+        <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} onCapture={() => captureSnapshot(m.id)} onSelectSnapshot={(snapshotId) => selectSnapshot(m.id, snapshotId)} />)}</div>
       </section>
     </div> : <UpcomingBoard fixtures={upcomingFixtures} loading={upcomingLoading} onRest={(count) => setRestCount((value) => value + count)} />}
   </main>;
@@ -202,27 +231,52 @@ function isSelectedLeague(fixture: UpcomingFixture) {
 
 function normalize(value: string) { return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase(); }
 
-function MatchCard({ match }: { match: LiveMatch }) {
+function MatchCard({ match, onCapture, onSelectSnapshot }: { match: LiveMatch; onCapture: () => void; onSelectSnapshot: (id: string) => void }) {
   const status = /^\d+(?:\+\d+)?$/.test(match.status) ? `${match.status}'` : match.status;
+  const selectedSnapshot = match.snapshots.find((snapshot) => snapshot.id === match.selectedSnapshotId);
   return <article className="score-card"><div className="league-line"><span>{match.country} · {match.league}</span><b>{status}</b></div><div className="scoreline"><div><span className="crest home">{match.home.slice(0, 2).toUpperCase()}</span><strong>{match.home}</strong></div><p><b>{match.homeScore}</b><i>–</i><b>{match.awayScore}</b></p><div><span className="crest away">{match.away.slice(0, 2).toUpperCase()}</span><strong>{match.away}</strong></div></div><div className="update-line"><span className="live-pill">● LIVE</span><span>{match.updatedAt ? `更新 ${match.updatedAt} JST · #${match.updates}` : '初回データ待機中'}</span></div>
     {match.htStats && <DeltaPanel match={match} />}
+    <div className="snapshot-panel"><div className="snapshot-actions"><button onClick={onCapture} disabled={!match.stats.length}>現在値をスナップ（REST 0）</button><span>{match.snapshots.length ? `${match.snapshots.length}件保存` : '好きな時点を保存できます'}</span></div>{match.snapshots.length > 0 && <div className="snapshot-tabs">{match.snapshots.map((snapshot) => <button className={snapshot.id === match.selectedSnapshotId ? 'active' : ''} onClick={() => onSelectSnapshot(snapshot.id)} key={snapshot.id}>{formatSnapshotStatus(snapshot.status)} <small>{snapshot.capturedAt}</small></button>)}</div>}</div>
+    {selectedSnapshot && <SnapshotDeltaPanel match={match} snapshot={selectedSnapshot} />}
     {match.stats.length ? <div className="stats"><div className="stat-head"><span>HOME</span><b>CURRENT STATISTICS</b><span>AWAY</span></div>{match.stats.map((s, i) => <div className="stat-row" key={`${s.type}-${i}`}><strong>{s.home ?? 'N/A'}</strong><span>{s.type}</span><strong>{s.away ?? 'N/A'}</strong></div>)}</div> : <div className="waiting"><span /><p>WebSocketのmatch_updateを待っています</p></div>}
   </article>;
 }
 
 function DeltaPanel({ match }: { match: LiveMatch }) {
   const target = match.sixtyStats ?? match.stats;
-  const baseline = new Map(match.htStats?.map((stat) => [stat.type, stat]));
-  const rows = target.flatMap((stat) => {
-    const before = baseline.get(stat.type);
-    if (!before) return [];
-    const home = numeric(stat.home), away = numeric(stat.away), baseHome = numeric(before.home), baseAway = numeric(before.away);
-    if (home === null || away === null || baseHome === null || baseAway === null) return [];
-    return [{ type: stat.type, home: home - baseHome, away: away - baseAway }];
-  });
+  const rows = statDeltas(match.htStats ?? [], target);
   const currentMinute = /^\d+$/.test(match.status) ? Number(match.status) : null;
   const title = match.sixtyStats ? `HT → ${match.sixtyMinute}分 SNAPSHOT` : `HT → ${currentMinute ?? match.status} LIVE DELTA`;
   return <div className={`delta-panel ${match.sixtyStats ? 'locked' : ''}`}><div className="delta-title"><b>{title}</b><span>{match.sixtyStats ? '固定済み' : '60分到達待ち'}</span></div><div className="stat-head"><span>HOME ±</span><b>CHANGE</b><span>AWAY ±</span></div>{rows.map((row, index) => <div className="stat-row delta-row" key={`${row.type}-${index}`}><strong>{signed(row.home)}</strong><span>{row.type}</span><strong>{signed(row.away)}</strong></div>)}</div>;
+}
+
+function SnapshotDeltaPanel({ match, snapshot }: { match: LiveMatch; snapshot: ManualSnapshot }) {
+  const rows = statDeltas(snapshot.stats, match.stats);
+  return <div className="snapshot-delta"><div className="delta-title"><b>{formatSnapshotStatus(snapshot.status)} → {formatSnapshotStatus(match.status)} CURRENT DELTA</b><span>取得 {snapshot.capturedAt} JST</span></div><div className="stat-head"><span>HOME ±</span><b>CHANGE</b><span>AWAY ±</span></div>{rows.length ? rows.map((row) => <div className="stat-row delta-row" key={row.key}><strong>{signed(row.home)}</strong><span>{row.type}</span><strong>{signed(row.away)}</strong></div>) : <p className="no-delta">比較可能な数値statsを待っています</p>}</div>;
+}
+
+function statDeltas(baseline: Stat[], target: Stat[]) {
+  const occurrences = new Map<string, number>();
+  return target.flatMap((stat) => {
+    const occurrence = occurrences.get(stat.type) ?? 0;
+    occurrences.set(stat.type, occurrence + 1);
+    const before = baseline.filter((item) => item.type === stat.type)[occurrence];
+    if (!before) return [];
+    const home = numeric(stat.home), away = numeric(stat.away), baseHome = numeric(before.home), baseAway = numeric(before.away);
+    if (home === null || away === null || baseHome === null || baseAway === null) return [];
+    return [{ key: `${stat.type}-${occurrence}`, type: occurrence ? `${stat.type} #${occurrence + 1}` : stat.type, home: home - baseHome, away: away - baseAway }];
+  });
+}
+
+function formatSnapshotStatus(status: string) { return /^\d+(?:\+\d+)?$/.test(status) ? `${status}'` : status; }
+
+function eventFromMatch(sessionId: string, match: LiveMatch, eventType: string, payload: unknown, receivedAt = new Date().toISOString()): MonitorEvent {
+  return { sessionId, fixtureId: match.id, eventType, receivedAt, status: match.status, home: match.home, away: match.away, homeScore: match.homeScore, awayScore: match.awayScore, payload };
+}
+
+function persistEvents(events: MonitorEvent[]) {
+  if (!events.length) return;
+  void fetch('/api/monitor-events', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ events }), keepalive: true }).catch(() => undefined);
 }
 
 function numeric(value: string | number | null) { const found = String(value ?? '').match(/-?\d+(?:\.\d+)?/); return found ? Number(found[0]) : null; }
