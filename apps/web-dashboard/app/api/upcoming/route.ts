@@ -71,6 +71,8 @@ export async function GET() {
         country: fixture.countryName ?? fixture.league?.country?.name ?? fixture.country_name ?? '',
         home: fixture.homeTeamName ?? fixture.homeTeam?.name ?? fixture.match_hometeam_name ?? 'Home',
         away: fixture.awayTeamName ?? fixture.awayTeam?.name ?? fixture.match_awayteam_name ?? 'Away',
+        homeTeamId: String(fixture.homeTeamId ?? fixture.homeTeam?.id ?? fixture.match_hometeam_id ?? ''),
+        awayTeamId: String(fixture.awayTeamId ?? fixture.awayTeam?.id ?? fixture.match_awayteam_id ?? ''),
         kickoffUtc,
         kickoffJst: new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(kickoffMs)),
         status: String(fixture.matchStatus ?? fixture.match_status ?? fixture.status ?? 'SCHEDULED'),

@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 type Fixture = { id: string; league: string; country: string; home: string; away: string; homeScore: string; awayScore: string; status: string };
-type UpcomingFixture = { id: string; league: string; country: string; home: string; away: string; kickoffUtc: string; kickoffJst: string; status: string };
+type UpcomingFixture = { id: string; league: string; country: string; home: string; away: string; homeTeamId: string; awayTeamId: string; kickoffUtc: string; kickoffJst: string; status: string };
+type FormCandidate = { kickoffUtc: string; kickoffJst: string; league: string; country: string; fixtureId: string; team: string; side: 'home' | 'away'; opponent: string; wins: number; last5: { result: string; score: string; opponent: string; fixtureId: string }[] };
 type Stat = { type: string; home: string | number | null; away: string | number | null };
 type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; updates: number; htStats?: Stat[]; sixtyStats?: Stat[]; sixtyMinute?: number };
 const WS_URL = 'wss://api.goal-api.com/ws';
@@ -136,15 +137,40 @@ export default function Home() {
       <section className="score-stage">{!Object.keys(matches).length && <div className="hero-empty"><div className="pulse-rings"><span /><span /><b>⚽</b></div><h2>試合を選択してください</h2><p>左のライブ一覧から最大25試合を選び、1本のSocketで同時監視できます。</p><div className="flow"><span>LIVE LIST<small>1 REST</small></span><i>→</i><span>SELECT<small>最大25試合</small></span><i>→</i><span>WEBSOCKET<small>更新消費 0</small></span></div></div>}
         <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} />)}</div>
       </section>
-    </div> : <UpcomingBoard fixtures={upcomingFixtures} loading={upcomingLoading} />}
+    </div> : <UpcomingBoard fixtures={upcomingFixtures} loading={upcomingLoading} onRest={(count) => setRestCount((value) => value + count)} />}
   </main>;
 }
 
-function UpcomingBoard({ fixtures, loading }: { fixtures: UpcomingFixture[]; loading: boolean }) {
+function UpcomingBoard({ fixtures, loading, onRest }: { fixtures: UpcomingFixture[]; loading: boolean; onRest: (count: number) => void }) {
+  const [scope, setScope] = useState<'all' | 'big5'>('big5');
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisMessage, setAnalysisMessage] = useState('');
+  const [candidates, setCandidates] = useState<FormCandidate[]>([]);
+  const shown = scope === 'big5' ? fixtures.filter(isBigFiveTopTwo) : fixtures;
+  const uniqueTeams = new Set(shown.flatMap((fixture) => [fixture.homeTeamId, fixture.awayTeamId]).filter(Boolean)).size;
+
+  async function analyzeForm() {
+    if (!shown.length || analyzing) return;
+    setAnalyzing(true); setCandidates([]); setAnalysisMessage(`${uniqueTeams}チームの直近5試合を確認中…`);
+    try {
+      const response = await fetch('/api/form-candidates', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fixtures: shown }) });
+      const data = await response.json();
+      onRest(Number(data.apiRequests ?? 0));
+      if (!response.ok) throw new Error(data.error || '直近成績を取得できませんでした');
+      setCandidates(data.candidates ?? []);
+      setAnalysisMessage(`${data.checkedTeams}チームを${data.apiRequests} RESTで確認。4勝以上は${data.candidates.length}チーム${data.failedTeams ? `（取得失敗 ${data.failedTeams}）` : ''}。`);
+    } catch (error) { setAnalysisMessage(error instanceof Error ? error.message : '分析エラー'); }
+    finally { setAnalyzing(false); }
+  }
+
   return <section className="upcoming-stage">
     {!fixtures.length ? <div className="hero-empty upcoming-empty"><div className="pulse-rings"><span /><span /><b>24h</b></div><h2>{loading ? '試合一覧を取得しています' : 'まだ試合を取得していません'}</h2><p>取得ボタン1回で、現在時刻から24時間以内にキックオフする試合だけを表示します。</p></div> : <>
-      <div className="upcoming-summary"><span>UPCOMING FIXTURES</span><strong>{fixtures.length}</strong><small>現在時刻から24時間以内・JST順</small></div>
-      <div className="upcoming-list">{fixtures.map((fixture) => <article className="upcoming-row" key={fixture.id}>
+      <div className="scope-panel"><div><button className={scope === 'big5' ? 'active' : ''} onClick={() => { setScope('big5'); setCandidates([]); setAnalysisMessage(''); }}>5大リーグ 1部・2部</button><button className={scope === 'all' ? 'active' : ''} onClick={() => { setScope('all'); setCandidates([]); setAnalysisMessage(''); }}>全試合</button></div><button className="analyze-button" disabled={analyzing || !shown.length || uniqueTeams > 250} onClick={analyzeForm}>{analyzing ? '分析中…' : `直近5試合を分析（最大 ${uniqueTeams} REST）`}</button></div>
+      <div className="scope-note">絞り込みは取得済みfixture内で行うため追加REST 0。直近成績はユニークteamごとに1 RESTです。</div>
+      <div className="upcoming-summary"><span>{scope === 'big5' ? 'BIG FIVE · TOP TWO DIVISIONS' : 'UPCOMING FIXTURES'}</span><strong>{shown.length}</strong><small>現在時刻から24時間以内・JST順 · {uniqueTeams}チーム</small></div>
+      {analysisMessage && <div className="analysis-message">{analysisMessage}</div>}
+      {candidates.length > 0 && <section className="candidate-section"><div className="candidate-title"><span>WATCH CANDIDATES</span><strong>直近5試合で4勝以上</strong></div><div className="candidate-grid">{candidates.map((candidate) => <article className="candidate-card" key={`${candidate.fixtureId}-${candidate.team}`}><div><time>{candidate.kickoffJst} JST</time><b>{candidate.wins}/5 WINS</b></div><h3>{candidate.team}</h3><p>{candidate.side.toUpperCase()} vs {candidate.opponent}</p><small>{candidate.country} · {candidate.league}</small><div className="form-strip">{candidate.last5.map((result, index) => <span className={result.result.toLowerCase()} title={`${result.opponent} ${result.score}`} key={`${result.fixtureId}-${index}`}>{result.result}</span>)}</div></article>)}</div></section>}
+      <div className="upcoming-list">{shown.map((fixture) => <article className="upcoming-row" key={fixture.id}>
         <time dateTime={fixture.kickoffUtc}><strong>{fixture.kickoffJst}</strong><small>JST</small></time>
         <div className="upcoming-teams"><span>{fixture.home}</span><i>vs</i><span>{fixture.away}</span></div>
         <div className="upcoming-meta"><strong>{fixture.country}</strong><span>{fixture.league}</span><code>{fixture.id}</code></div>
@@ -152,6 +178,21 @@ function UpcomingBoard({ fixtures, loading }: { fixtures: UpcomingFixture[]; loa
     </>}
   </section>;
 }
+
+function isBigFiveTopTwo(fixture: UpcomingFixture) {
+  const country = normalize(fixture.country);
+  const league = normalize(fixture.league).replace(/\s+-\s+.*$/, '');
+  const exact: Record<string, string[]> = {
+    england: ['premier league', 'championship'],
+    spain: ['la liga', 'laliga', 'primera division', 'segunda division', 'la liga 2', 'laliga2'],
+    italy: ['serie a', 'serie b'],
+    germany: ['bundesliga', '2. bundesliga'],
+    france: ['ligue 1', 'ligue 2'],
+  };
+  return (exact[country] ?? []).includes(league);
+}
+
+function normalize(value: string) { return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase(); }
 
 function MatchCard({ match }: { match: LiveMatch }) {
   const status = /^\d+(?:\+\d+)?$/.test(match.status) ? `${match.status}'` : match.status;
