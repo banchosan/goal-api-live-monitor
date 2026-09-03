@@ -16,7 +16,7 @@ Web画面上部のタブで、次の2画面を切り替えられます。
 
 ライブ監視では、各試合の「現在値をスナップ」から任意時点のstatisticsを保存し、その時点から現在までの増減を比較できます。WebSocketの生更新、手動スナップ、score/status、監視開始・追加・終了はローカルD1へ永続保存されます。保存処理とスナップ比較によるGOAL API REST消費は0です。
 
-`今後24時間`では、取得済みfixtureを追加RESTなしで「指定リーグ」に絞り込めます。対象は5大リーグの1部・2部に加え、イランPro League、サウジアラビア2部、Coppa Italia、ブルガリアFirst League、オーストリアBundesliga、デンマークSuperliga、ベルギーFirst Division A、スイスSuper League、スコットランドPremiershipです。分析ボタンを押すと、対象のユニークteamごとに `/teams/:id/results?limit=5` を1回取得し、直近5試合で4勝以上のteamを監視候補として表示します。実行前に最大REST数をボタン上で確認できます。
+`今後24時間`では、取得済みfixtureを追加RESTなしで「指定リーグ」に絞り込めます。対象は5大リーグの1部・2部に加え、イランPro League、サウジアラビア2部、Coppa Italia、ブルガリアFirst League、オーストリアBundesliga、デンマークSuperliga、ベルギーFirst Division A、スイスSuper League、スコットランドPremiershipです。分析ボタンを押すと、対象のユニークteamごとに `/teams/:id/results?limit=5` を1回取得し、直近5試合で「4勝以上」または「3勝かつ1分以上」のteamを監視候補として表示します。実行前に最大REST数をボタン上で確認できます。
 
 ## 起動
 

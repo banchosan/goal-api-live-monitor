@@ -62,7 +62,8 @@ export async function POST(request: Request) {
         const matches = Array.isArray(payload?.data) ? payload.data : [];
         const results = matches.map((match: Record<string, any>) => resultForTeam(match, task.teamId)).filter(Boolean).slice(0, 5);
         const wins = results.filter((item: any) => item.result === 'W').length;
-        return { ...task, results, wins, played: results.length, source: payload?.source ?? null };
+        const draws = results.filter((item: any) => item.result === 'D').length;
+        return { ...task, results, wins, draws, played: results.length, source: payload?.source ?? null };
       } catch (error) {
         return { ...task, error: error instanceof Error ? error.message : '取得エラー', results: [], wins: null };
       }
@@ -70,7 +71,7 @@ export async function POST(request: Request) {
     checked.push(...rows);
   }
 
-  const candidates = checked.filter((team) => team.played === 5 && team.wins >= 4).map((team) => ({
+  const candidates = checked.filter((team) => team.played === 5 && (team.wins >= 4 || (team.wins === 3 && team.draws >= 1))).map((team) => ({
     kickoffUtc: team.fixture.kickoffUtc,
     kickoffJst: team.fixture.kickoffJst,
     league: team.fixture.league,
@@ -81,6 +82,7 @@ export async function POST(request: Request) {
     opponent: team.opponent,
     last5: team.results,
     wins: team.wins,
+    draws: team.draws,
   }));
 
   return Response.json({ candidates, checkedTeams: checked.length, failedTeams: checked.filter((team) => team.error).length, apiRequests });
