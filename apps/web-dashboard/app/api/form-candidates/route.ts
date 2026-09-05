@@ -1,3 +1,6 @@
+import { env } from 'cloudflare:workers';
+import { monitorSchema } from '@/db/schema';
+
 export const dynamic = 'force-dynamic';
 
 const API_BASE = 'https://api.goal-api.com/v1';
@@ -9,6 +12,16 @@ type InputFixture = {
 };
 
 type TeamTask = { teamId: string; team: string; side: 'home' | 'away'; opponent: string; fixture: InputFixture };
+
+let schemaReady: Promise<void> | undefined;
+async function saveAnalysis(payload: { runId:string;createdAt:string;checkedTeams:number;failedTeams:number;apiRequests:number;candidates:unknown;checked:unknown }) {
+  const db = (env as unknown as { DB: D1Database }).DB;
+  schemaReady ??= db.batch(monitorSchema.map((statement) => db.prepare(statement))).then(() => undefined);
+  await schemaReady;
+  await db.prepare(`INSERT INTO form_analysis_runs
+    (run_id, created_at, checked_teams, failed_teams, api_requests, candidates_json, checked_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(payload.runId,payload.createdAt,payload.checkedTeams,payload.failedTeams,payload.apiRequests,JSON.stringify(payload.candidates),JSON.stringify(payload.checked)).run();
+}
 
 function numberValue(value: unknown) {
   const parsed = Number(value);
@@ -85,5 +98,11 @@ export async function POST(request: Request) {
     draws: team.draws,
   }));
 
-  return Response.json({ candidates, checkedTeams: checked.length, failedTeams: checked.filter((team) => team.error).length, apiRequests });
+  const failedTeams = checked.filter((team) => team.error).length;
+  const createdAt = new Date().toISOString();
+  const runId = `${createdAt}-${crypto.randomUUID()}`;
+  let saved = true;
+  try { await saveAnalysis({ runId, createdAt, checkedTeams: checked.length, failedTeams, apiRequests, candidates, checked }); }
+  catch (error) { saved = false; console.error('form analysis save failed', error); }
+  return Response.json({ candidates, checkedTeams: checked.length, failedTeams, apiRequests, runId, saved });
 }
