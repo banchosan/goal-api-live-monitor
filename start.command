@@ -16,5 +16,8 @@ if [[ ! -d node_modules ]]; then
   echo "初回セットアップ中です…"
   npm install
 fi
+# vinextが異常終了した場合に残るロックだけを除去する。起動中なら
+# このスクリプトの先頭で終了しているため、稼働中サーバーには触れない。
+rm -f "$WEB_DIR/.vinext/dev/lock.json"
 echo "GOAL LIVEを起動します: http://localhost:3000/"
 npm run dev

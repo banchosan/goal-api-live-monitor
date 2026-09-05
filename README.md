@@ -6,6 +6,7 @@ GOAL API Freeプランを使った、ライブ試合一覧・WebSocket statistic
 
 - Web画面: `apps/web-dashboard/`
 - ダブルクリック起動: `start.command`
+- 普段の起動・停止・状態確認: `操作/`
 - APIキー: ルートの `.env` に `GOAL_API_KEY=...`
 - 取得ログ: `data/goal_api_test/`
 
@@ -29,6 +30,8 @@ npm run dev
 ```
 
 ブラウザで http://localhost:3000/ を開きます。
+
+普段はFinderで `操作` フォルダを開き、起動・停止・状態確認の `.command` をダブルクリックするだけで操作できます。Codexへ起動を依頼する必要はありません。
 
 ## 構成
 
