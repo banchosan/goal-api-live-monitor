@@ -17,6 +17,8 @@ Web画面上部のタブで、次の2画面を切り替えられます。
 
 ライブ監視では、各試合の「現在値をスナップ」から任意時点のstatisticsを保存し、その時点から現在までの増減を比較できます。WebSocketの生更新、手動スナップ、score/status、監視開始・追加・終了はローカルD1へ永続保存されます。保存処理とスナップ比較によるGOAL API REST消費は0です。
 
+WebSocket収集は `services/collector/` のローカルCollectorが担当します。画面を再読み込みしてもCollectorは止まらず、異常切断時だけ自動で再接続・再認証・再subscribeします。「監視を停止」を押した場合は再接続しません。通常時の定期REST statistics pollingは行いません。
+
 `今後24時間`では、取得済みfixtureを追加RESTなしで「指定リーグ」に絞り込めます。対象は5大リーグの1部・2部、オランダ1部・2部に加え、イランPro League、サウジアラビア1部・2部、Coppa Italia、ブルガリアFirst League、オーストリアBundesliga、デンマークSuperliga、ベルギーFirst Division A、スイスSuper League、スコットランドPremiership、Turkey 1. Lig、Qatar Stars League、Algeria Ligue 1、Poland Ekstraklasa、Estonia Esiliiga A、Armenia Premier League、Egypt Premier League、Hungary NB I、エクアドル1部、ブラジル1部・2部、アルゼンチン1部、コロンビア1部です。分析ボタンを押すと、対象のユニークteamごとに `/teams/:id/results?limit=5` を1回取得し、直近5試合で「4勝以上」または「3勝かつ1分以上」のteamを監視候補として表示します。実行前に最大REST数をボタン上で確認できます。
 
 ## 起動
@@ -60,7 +62,16 @@ goal-api-live-monitor/
 
 - これまでのJSON/JSONL: `data/goal_api_test/`
 - Web画面の永続DB: `apps/web-dashboard/.wrangler/state/v3/d1/`（Git対象外）
+- Collector raw JSONL: `data/goal_api_test/collector/<session_id>/events.jsonl`
 - 分析結果: `data/goal_api_test/analysis/latest.json` と `latest.md`
+
+保存済みrawから任意minuteを復元するローカルAPI:
+
+```text
+GET /api/timeline?fixtureId=<id>&minute=60&sessionId=<session_id>
+```
+
+`targetMinute`、`actualObservedMinute`、`freshnessMinutes`、`missing`、`monitoringSession`、`connectionGap`を返します。外部API通信はありません。
 
 既存データを再分析する場合:
 
@@ -80,6 +91,7 @@ python3 scripts/analyze_saved_goal_api_data.py
 - WebSocket `match_update`受信は日次1,000 REST quotaを消費しない
 - `/ws/token` は日次1,000件とは別のrate-limit bucket
 - 正確な試合分数は主にWebSocket `match_status`から取得
+- 通常監視中のREST statistics pollingは0。Socket再接続時は新しい`/ws/token`だけ取得
 
 ## Git運用
 

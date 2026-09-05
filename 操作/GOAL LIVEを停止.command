@@ -1,5 +1,5 @@
 #!/bin/zsh
-PIDS="$(lsof -tiTCP:3000 -sTCP:LISTEN)"
+PIDS="$( { lsof -tiTCP:3000 -sTCP:LISTEN; lsof -tiTCP:4317 -sTCP:LISTEN; } | sort -u )"
 if [[ -z "$PIDS" ]]; then
   echo "GOAL LIVEは起動していません。"
 else

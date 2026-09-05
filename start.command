@@ -20,4 +20,13 @@ fi
 # このスクリプトの先頭で終了しているため、稼働中サーバーには触れない。
 rm -f "$WEB_DIR/.vinext/dev/lock.json"
 echo "GOAL LIVEを起動します: http://localhost:3000/"
+COLLECTOR_PID=""
+if ! lsof -nP -iTCP:4317 -sTCP:LISTEN >/dev/null 2>&1; then
+  node "$PROJECT_DIR/services/collector/collector-daemon.mjs" >> "$PROJECT_DIR/data/collector-daemon.log" 2>&1 &
+  COLLECTOR_PID=$!
+fi
+cleanup() {
+  if [[ -n "$COLLECTOR_PID" ]]; then kill "$COLLECTOR_PID" >/dev/null 2>&1 || true; fi
+}
+trap cleanup EXIT INT TERM
 npm run dev

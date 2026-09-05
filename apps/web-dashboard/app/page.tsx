@@ -7,9 +7,8 @@ type UpcomingFixture = { id: string; league: string; country: string; home: stri
 type FormCandidate = { kickoffUtc: string; kickoffJst: string; league: string; country: string; fixtureId: string; team: string; side: 'home' | 'away'; opponent: string; wins: number; draws: number; last5: { result: string; score: string; opponent: string; fixtureId: string }[] };
 type Stat = { type: string; home: string | number | null; away: string | number | null };
 type ManualSnapshot = { id: string; status: string; capturedAt: string; stats: Stat[] };
-type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; updates: number; htStats?: Stat[]; sixtyStats?: Stat[]; sixtyMinute?: number; snapshots: ManualSnapshot[]; selectedSnapshotId?: string };
+type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; lastReceivedAt?: string; updates: number; ended?: boolean; htStats?: Stat[] | null; sixtyStats?: Stat[] | null; sixtyMinute?: number | null; snapshots: ManualSnapshot[]; selectedSnapshotId?: string };
 type MonitorEvent = { sessionId: string; fixtureId: string; eventType: string; receivedAt: string; status?: string; home?: string; away?: string; homeScore?: string; awayScore?: string; payload: unknown };
-const WS_URL = 'wss://api.goal-api.com/ws';
 
 export default function Home() {
   const [viewMode, setViewMode] = useState<'live' | 'upcoming'>('live');
@@ -25,7 +24,7 @@ export default function Home() {
   const [message, setMessage] = useState('「ライブ試合を取得」を押してください');
   const [restCount, setRestCount] = useState(0);
   const [frameCount, setFrameCount] = useState(0);
-  const socketRef = useRef<WebSocket | null>(null);
+  const [collectorRequests, setCollectorRequests] = useState(0);
   const sessionIdRef = useRef('');
   const matchesRef = useRef<Record<string, LiveMatch>>({});
   const visible = useMemo(() => fixtures.filter((f) => `${f.home} ${f.away} ${f.league} ${f.country}`.toLowerCase().includes(query.toLowerCase())), [fixtures, query]);
@@ -66,51 +65,19 @@ export default function Home() {
 
   async function startMonitoring() {
     if (!selected.length) return;
-    sessionIdRef.current = `${Date.now()}-${crypto.randomUUID()}`;
-    socketRef.current?.close(); setConnection('connecting'); setMessage('WebSocketへ接続中…');
+    setConnection('connecting'); setMessage('Collectorへ監視開始を依頼中…');
     const initialMatches = Object.fromEntries(selected.map((id) => { const f = fixtures.find((x) => x.id === id)!; return [id, { ...f, stats: [], updates: 0, snapshots: [] }]; }));
     setMatches(initialMatches);
-    persistEvents(Object.values(initialMatches).map((match) => eventFromMatch(sessionIdRef.current, match, 'session_start', { selectedAt: new Date().toISOString() })));
     try {
-      const response = await fetch('/api/ws-token', { method: 'POST' }); setRestCount((v) => v + 1);
+      const response = await fetch('/api/collector', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'start', fixtures: Object.values(initialMatches) }) });
       const body = await response.json();
-      if (!response.ok || !body.token) throw new Error(body.error || 'WebSocket token取得失敗');
-      const socket = new WebSocket(`${WS_URL}?wsToken=${encodeURIComponent(body.token)}`); socketRef.current = socket;
-      socket.onopen = () => socket.send(JSON.stringify({ type: 'auth', token: body.token }));
-      socket.onmessage = (event) => {
-        setFrameCount((v) => v + 1); const payload = JSON.parse(String(event.data));
-        if (payload.type === 'auth_success') { selected.forEach((id) => socket.send(JSON.stringify({ type: 'subscribe', resource: 'match', matchId: id }))); return; }
-        if (payload.type === 'subscribe_response') { if (payload.success) { setConnection('live'); setMessage(`${selected.length}試合をWebSocket監視中。受信フレームのREST消費は0です。`); } return; }
-        if (payload.type !== 'match_update') return;
-        const data = payload.data ?? {}; const id = data.id ?? data.fixture_id ?? data.fixtureId;
-        const receivedAt = new Date().toISOString();
-        const knownMatch = matchesRef.current[id];
-        if (knownMatch) persistEvents([eventFromMatch(sessionIdRef.current, { ...knownMatch, status: String(data.match_status ?? knownMatch.status), home: data.match_hometeam_name ?? knownMatch.home, away: data.match_awayteam_name ?? knownMatch.away, homeScore: data.match_hometeam_score ?? knownMatch.homeScore, awayScore: data.match_awayteam_score ?? knownMatch.awayScore }, 'match_update', payload, receivedAt)]);
-        setMatches((now) => {
-          if (!now[id]) return now;
-          const previous = now[id];
-          const nextStatus = String(data.match_status ?? previous.status);
-          const nextStats = Array.isArray(data.statistics) ? data.statistics : previous.stats;
-          const minute = /^\d+$/.test(nextStatus) ? Number(nextStatus) : null;
-          const previousMinute = /^\d+$/.test(previous.status) ? Number(previous.status) : null;
-          const isHalfTime = ['HT', 'HALF_TIME', 'HALF TIME'].includes(nextStatus.toUpperCase());
-          let htStats = previous.htStats;
-          if (isHalfTime && nextStats.length) htStats = nextStats;
-          else if (!htStats && minute !== null && minute >= 46 && previousMinute !== null && previousMinute <= 45 && previous.stats.length) htStats = previous.stats;
-          let sixtyStats = previous.sixtyStats;
-          let sixtyMinute = previous.sixtyMinute;
-          if (!sixtyStats && htStats && minute !== null && minute >= 60 && nextStats.length) { sixtyStats = nextStats; sixtyMinute = minute; }
-          return { ...now, [id]: { ...previous, home: data.match_hometeam_name ?? previous.home, away: data.match_awayteam_name ?? previous.away, homeScore: data.match_hometeam_score ?? previous.homeScore, awayScore: data.match_awayteam_score ?? previous.awayScore, status: nextStatus, stats: nextStats, htStats, sixtyStats, sixtyMinute, updatedAt: new Date().toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' }), updates: previous.updates + 1 } };
-        });
-      };
-      socket.onerror = () => { setConnection('error'); setMessage('WebSocket接続エラー'); };
-      socket.onclose = () => setConnection((v) => v === 'error' ? v : 'idle');
+      if (!response.ok) throw new Error(body.error || 'Collector開始失敗');
+      sessionIdRef.current = body.sessionId ?? '';
     } catch (error) { setConnection('error'); setMessage(error instanceof Error ? error.message : '接続エラー'); }
   }
 
   function addSelectedMatches() {
-    const socket = socketRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN || !addableIds.length) return;
+    if (connection !== 'live' || !addableIds.length) return;
     setMatches((now) => {
       const additions = Object.fromEntries(addableIds.map((id) => {
         const fixture = fixtures.find((item) => item.id === id)!;
@@ -118,16 +85,12 @@ export default function Home() {
       }));
       return { ...now, ...additions };
     });
-    persistEvents(addableIds.map((id) => eventFromMatch(sessionIdRef.current, { ...fixtures.find((item) => item.id === id)!, stats: [], updates: 0, snapshots: [] }, 'session_add', { addedAt: new Date().toISOString() })));
-    addableIds.forEach((id) => socket.send(JSON.stringify({ type: 'subscribe', resource: 'match', matchId: id })));
-    setMessage(`${addableIds.length}試合を現在のWebSocket監視へ追加しました。REST消費は0です。`);
+    void fetch('/api/collector', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'add', fixtures: addableIds.map((id) => fixtures.find((item) => item.id === id)) }) }).then(async (response) => { const body = await response.json(); if (!response.ok) throw new Error(body.error); setMessage(`${addableIds.length}試合を現在のCollectorへ追加しました。GOAL API REST消費は0です。`); }).catch((error) => setMessage(error instanceof Error ? error.message : '追加失敗'));
   }
 
   function stopMonitoring() {
-    const socket = socketRef.current;
-    if (socket) Object.keys(matches).forEach((id) => socket.send(JSON.stringify({ type: 'unsubscribe', resource: 'match', matchId: id })));
-    persistEvents(Object.values(matchesRef.current).map((match) => eventFromMatch(sessionIdRef.current, match, 'session_stop', { stoppedAt: new Date().toISOString() })));
-    socket?.close(1000, 'user stopped'); socketRef.current = null; setConnection('idle'); setMessage('監視を停止しました');
+    setConnection('idle'); setMessage('Collectorを停止中…');
+    void fetch('/api/collector', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }) }).then(() => setMessage('監視を停止しました。手動停止後は再接続しません。')).catch(() => setMessage('Collector停止を確認できませんでした'));
   }
 
   function captureSnapshot(id: string) {
@@ -147,7 +110,22 @@ export default function Home() {
     });
   }
   useEffect(() => { matchesRef.current = matches; }, [matches]);
-  useEffect(() => () => socketRef.current?.close(), []);
+  useEffect(() => {
+    let cancelled = false;
+    const sync = async () => {
+      try {
+        const response = await fetch('/api/collector', { cache: 'no-store' }); if (!response.ok) throw new Error();
+        const data = await response.json(); if (cancelled) return;
+        sessionIdRef.current = data.sessionId ?? ''; setCollectorRequests(Number(data.goalApiRequests ?? 0));
+        setFrameCount((data.fixtures ?? []).reduce((sum: number, fixture: LiveMatch) => sum + Number(fixture.updates ?? 0), 0));
+        if (data.fixtures?.length) setMatches((current) => Object.fromEntries(data.fixtures.map((fixture: LiveMatch) => [fixture.id, { ...fixture, updatedAt: fixture.updatedAt ? new Date(fixture.updatedAt).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' }) : undefined, snapshots: current[fixture.id]?.snapshots ?? [], selectedSnapshotId: current[fixture.id]?.selectedSnapshotId }])));
+        if (data.active && data.connectionState === 'live') { setConnection('live'); setMessage(`${data.fixtures.length}試合を独立Collectorで監視中。ブラウザを再読込しても収集は継続します。`); }
+        else if (data.active) { setConnection('connecting'); setMessage(data.connectionState === 'reconnect_wait' ? `Socket切断を検知。再接続待機中（試行 ${data.reconnectAttempt}）` : 'CollectorがWebSocketへ接続中…'); }
+        else setConnection((value) => value === 'error' ? value : 'idle');
+      } catch { if (!cancelled) { setConnection('error'); setMessage('Collector daemonへ接続できません。起動スクリプトから再起動してください。'); } }
+    };
+    void sync(); const timer = window.setInterval(sync, 1000); return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
 
   return <main className="app-shell">
     <header className="topbar">
@@ -156,7 +134,7 @@ export default function Home() {
       <a className="odds-nav" href="/analysis">分析データ</a>
       <a className="odds-nav" href="/form-history">調子分析履歴</a>
       <div className="health"><span className={`dot ${connection}`} />{connection === 'live' ? 'LIVE CONNECTED' : connection === 'connecting' ? 'CONNECTING' : connection === 'error' ? 'CONNECTION ERROR' : 'SOCKET OFF'}</div>
-      <div className="quota"><span>REST USED</span><strong>{restCount}</strong><small>WS frames {frameCount}</small></div>
+      <div className="quota"><span>HTTP USED</span><strong>{restCount + collectorRequests}</strong><small>WS updates {frameCount}</small></div>
     </header>
     <nav className="view-tabs" aria-label="表示切替"><button className={viewMode === 'live' ? 'active' : ''} onClick={() => setViewMode('live')}>ライブ監視</button><button className={viewMode === 'upcoming' ? 'active' : ''} onClick={() => setViewMode('upcoming')}>今後24時間</button></nav>
     <section className="commandbar"><div><h1>{viewMode === 'live' ? 'ライブ試合を選んで、リアルタイムで見る。' : 'これから24時間以内に始まる全試合。'}</h1><p>{viewMode === 'live' ? message : upcomingMessage}</p></div><div className="actions">
