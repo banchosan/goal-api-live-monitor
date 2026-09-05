@@ -21,7 +21,14 @@ export const monitorSchema = [
     away TEXT,
     home_score TEXT,
     away_score TEXT,
-    payload_json TEXT NOT NULL
+    payload_json TEXT NOT NULL,
+    client_event_id TEXT,
+    connection_id TEXT,
+    sequence INTEGER,
+    source TEXT NOT NULL DEFAULT 'browser',
+    provider_timestamp TEXT,
+    payload_hash TEXT,
+    schema_version INTEGER NOT NULL DEFAULT 1
   )`,
   'CREATE INDEX IF NOT EXISTS monitor_events_fixture_time_idx ON monitor_events (fixture_id, received_at)',
   'CREATE INDEX IF NOT EXISTS monitor_events_session_idx ON monitor_events (session_id, id)',
