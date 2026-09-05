@@ -7,7 +7,7 @@ export type TimelineEvent = {
   connectionId?: string | null;
   sequence?: number | null;
   source?: string | null;
-  payload: any;
+  payload: unknown;
 };
 
 export type ReconstructedState = {
@@ -22,11 +22,13 @@ export type ReconstructedState = {
   observedAt: string | null;
   nextObservedMinute: number | null;
   source: string | null;
-  state: any | null;
+  state: unknown | null;
 };
 
 const numericMinute = (event: TimelineEvent) => {
-  const value = event.payload?.data?.match_status ?? event.payload?.match_status ?? null;
+  const payload = record(event.payload);
+  const data = record(payload.data);
+  const value = data.match_status ?? payload.match_status ?? null;
   return /^\d+$/.test(String(value ?? '')) ? Number(value) : null;
 };
 
@@ -67,6 +69,10 @@ export function reconstructAtMinute(events: TimelineEvent[], fixtureId: string, 
     observedAt: previous?.event.receivedAt ?? null,
     nextObservedMinute: next?.minute ?? null,
     source: previous?.event.source ?? null,
-    state: previous?.event.payload?.data ?? previous?.event.payload ?? null,
+    state: previous ? record(previous.event.payload).data ?? previous.event.payload : null,
   };
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
 }
