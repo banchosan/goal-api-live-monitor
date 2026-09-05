@@ -123,7 +123,7 @@ export class GoalApiCollector {
 
   async handleClose(socket, event) {
     if (socket !== this.socket) return; this.socket = null; this.authenticated = false;
-    await this.emitForActive('socket_disconnect', { code: event.code, reason: event.reason, abnormal: this.desired }, { source: 'websocket' });
+    await Promise.all([...this.fixtures.values()].filter((fixture) => !fixture.ended).map((fixture) => this.emit('socket_disconnect', fixture, { code: event.code, reason: event.reason, abnormal: this.desired, lastNormalReceivedAt: fixture.lastReceivedAt }, { source: 'websocket' })));
     if (this.desired) this.scheduleReconnect(`socket_close_${event.code}`); else this.connectionState = 'idle';
   }
 
