@@ -4,10 +4,7 @@ const TERMINAL = new Set(['FT', 'FINISHED', 'AFTER_ET', 'AFTER_PEN', 'CANCELLED'
 const providerTimestamp = (data) => data?.timestamp ?? data?.updated_at ?? data?.updatedAt ?? null;
 const RECONNECT_DELAYS_MS = [5_000, 10_000, 20_000, 30_000];
 const DEGRADED_RECONNECT_DELAY_MS = 60_000;
-const INITIAL_UPDATE_WAIT_MS = 45_000;
-const FIXTURE_STALE_MS = 90_000;
-const SOCKET_STALE_MS = 120_000;
-const REFRESH_COOLDOWN_MS = 120_000;
+const TOKEN_TIMEOUT_MS = 12_000;
 
 export class GoalApiCollector {
   constructor({ apiKey, fetchImpl = fetch, WebSocketImpl = WebSocket, persist = async () => {}, schedule = setTimeout, cancelSchedule = clearTimeout, now = () => new Date().toISOString() } = {}) {
@@ -69,46 +66,12 @@ export class GoalApiCollector {
     return this.status();
   }
 
-  async supplementStatistics(fixture, reason) {
-    fixture.restFallbackAttemptedAt = this.now();
-    this.goalApiRequests += 1;
-    try {
-      const response = await this.fetchImpl(`https://api.goal-api.com/v1/fixtures/${encodeURIComponent(fixture.id)}/statistics`, {
-        headers: { Authorization: `Bearer ${this.apiKey}`, Accept: 'application/json' },
-        signal: AbortSignal.timeout(12_000),
-      });
-      const raw = typeof response.text === 'function' ? await response.text() : JSON.stringify(await response.json());
-      if (!response.ok) throw new Error(`HTTP ${response.status}: ${raw.slice(0, 160)}`);
-      let payload; try { payload = JSON.parse(raw); } catch { throw new Error('invalid JSON'); }
-      const fullTime = payload?.data?.match?.fullTime;
-      if (Array.isArray(fullTime)) fixture.stats = mergeStatistics(fixture.stats, fullTime);
-      fixture.updatedAt = this.now(); fixture.subscriptionState = fullTime?.length ? 'rest_supplemented' : 'provider_no_statistics';
-      await this.emit('rest_fallback', fixture, { reason, response: payload, appliedStatistics: Array.isArray(fullTime) ? fullTime.length : 0 }, { source: 'rest' });
-    } catch (error) {
-      await this.emit('rest_fallback_error', fixture, { reason, error: error instanceof Error ? error.message : String(error) }, { source: 'rest' });
-    }
-  }
-
   async checkHealth() {
-    if (!this.desired || !this.authenticated || !this.socket || this.socket.readyState !== 1) return;
-    const currentMs = Date.parse(this.now());
-    const socketActivityMs = Date.parse(this.lastSocketActivityAt ?? '');
-    if (Number.isFinite(socketActivityMs) && currentMs - socketActivityMs >= SOCKET_STALE_MS) {
-      await this.emitForActive('socket_stale', { lastSocketActivityAt: this.lastSocketActivityAt, staleMs: currentMs - socketActivityMs }, { source: 'system' });
-      try { this.socket.close(4000, 'socket activity timeout'); } catch {}
-      return;
-    }
-    for (const fixture of this.fixtures.values()) {
-      if (fixture.ended || fixture.subscriptionState === 'pending' || fixture.subscriptionState === 'refreshing') continue;
-      const referenceMs = Date.parse(fixture.lastReceivedAt ?? fixture.subscribedAt ?? '');
-      if (!Number.isFinite(referenceMs)) continue;
-      const staleAfterMs = fixture.lastReceivedAt ? FIXTURE_STALE_MS : INITIAL_UPDATE_WAIT_MS;
-      const lastRefreshMs = Date.parse(fixture.lastRefreshAt ?? '');
-      if (currentMs - referenceMs >= staleAfterMs && (!Number.isFinite(lastRefreshMs) || currentMs - lastRefreshMs >= REFRESH_COOLDOWN_MS)) {
-        if (!fixture.restFallbackAttemptedAt) await this.supplementStatistics(fixture, fixture.lastReceivedAt ? 'socket_updates_stale' : 'initial_socket_update_missing');
-        await this.refresh(fixture.id, 'stale_fixture_no_updates');
-      }
-    }
+    // Do not treat a quiet match as a broken socket. GOAL API may legitimately send
+    // no match_update for a while. Native close/error events own reconnection; a
+    // timer-driven unsubscribe or REST snapshot can interrupt a healthy stream and
+    // makes a static response look like live data.
+    return this.status();
   }
 
   async stop(reason = 'manual_stop') {
@@ -127,7 +90,7 @@ export class GoalApiCollector {
 
   async token() {
     this.goalApiRequests += 1;
-    const response = await this.fetchImpl('https://api.goal-api.com/v1/ws/token', { method: 'POST', headers: { Authorization: `Bearer ${this.apiKey}`, Accept: 'application/json' } });
+    const response = await this.fetchImpl('https://api.goal-api.com/v1/ws/token', { method: 'POST', headers: { Authorization: `Bearer ${this.apiKey}`, Accept: 'application/json' }, signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS) });
     const raw = typeof response.text === 'function' ? await response.text() : JSON.stringify(await response.json());
     if (!response.ok) throw new Error(`/ws/token HTTP ${response.status}: ${raw.slice(0, 160)}`);
     let body; try { body = JSON.parse(raw); } catch { throw new Error('/ws/tokenがJSON以外を返しました'); }
@@ -227,7 +190,7 @@ export class GoalApiCollector {
   }
 }
 
-function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, ended: false, htStats: null, sixtyStats: null, sixtyMinute: null, subscriptionState: 'not_subscribed', subscribeRequestedAt: null, subscribedAt: null, lastRefreshAt: null, restFallbackAttemptedAt: null }; }
+function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, ended: false, htStats: null, sixtyStats: null, sixtyMinute: null, subscriptionState: 'not_subscribed', subscribeRequestedAt: null, subscribedAt: null, lastRefreshAt: null }; }
 function normalizeFixtures(fixtures) { return Array.isArray(fixtures) ? fixtures.filter((fixture) => fixture?.id).map((fixture) => ({ id: String(fixture.id), league: String(fixture.league ?? ''), country: String(fixture.country ?? ''), home: String(fixture.home ?? 'Home'), away: String(fixture.away ?? 'Away'), homeScore: String(fixture.homeScore ?? '-'), awayScore: String(fixture.awayScore ?? '-'), status: String(fixture.status ?? 'LIVE') })) : []; }
 
 export function mergeStatistics(previous, incoming) {

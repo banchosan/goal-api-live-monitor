@@ -2,13 +2,14 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { visibleCollectorFixtures, withoutFixture } from '@/lib/live-monitor-state';
+import { displayMatchMinute } from '@/lib/live-minute';
 
 type Fixture = { id: string; league: string; country: string; home: string; away: string; homeScore: string; awayScore: string; status: string };
 type UpcomingFixture = { id: string; league: string; country: string; home: string; away: string; homeTeamId: string; awayTeamId: string; kickoffUtc: string; kickoffJst: string; status: string };
 type FormCandidate = { kickoffUtc: string; kickoffJst: string; league: string; country: string; fixtureId: string; team: string; side: 'home' | 'away'; opponent: string; wins: number; draws: number; last5: { result: string; score: string; opponent: string; fixtureId: string }[] };
 type Stat = { type: string; home: string | number | null; away: string | number | null };
 type ManualSnapshot = { id: string; status: string; capturedAt: string; stats: Stat[] };
-type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; lastReceivedAt?: string; updates: number; ended?: boolean; htStats?: Stat[] | null; sixtyStats?: Stat[] | null; sixtyMinute?: number | null; subscriptionState?: string; restFallbackAttemptedAt?: string | null; snapshots: ManualSnapshot[]; selectedSnapshotId?: string };
+type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; lastReceivedAt?: string; updates: number; ended?: boolean; htStats?: Stat[] | null; sixtyStats?: Stat[] | null; sixtyMinute?: number | null; subscriptionState?: string; snapshots: ManualSnapshot[]; selectedSnapshotId?: string };
 type MonitorEvent = { sessionId: string; fixtureId: string; eventType: string; receivedAt: string; status?: string; home?: string; away?: string; homeScore?: string; awayScore?: string; payload: unknown };
 
 export default function Home() {
@@ -179,7 +180,7 @@ export default function Home() {
       <aside className="match-picker"><div className="picker-head"><div><span className="eyebrow">LIVE MATCHES</span><strong>{fixtures.length}</strong></div><span className="selection-count">{selected.length}/25 選択</span></div>
         <input aria-label="試合検索" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="チーム・リーグを検索" />
         <div className="fixture-list">{!fixtures.length && <div className="empty"><span>◉</span><p>まだ一覧を取得していません</p><small>LIVE/HTを各1ページ取得。100件超は次ページ分を追加します</small></div>}
-          {visible.map((f) => <label key={f.id} className={`fixture ${selected.includes(f.id) ? 'chosen' : ''}`}><input type="checkbox" checked={selected.includes(f.id)} onChange={() => toggle(f.id)} /><div className="fixture-main"><small>{f.country} · {f.league}</small><div><span>{f.home}</span><b>{f.homeScore}</b></div><div><span>{f.away}</span><b>{f.awayScore}</b></div></div><span className="minute">{/^\d+$/.test(f.status) ? `${f.status}'` : f.status}</span></label>)}
+          {visible.map((f) => <label key={f.id} className={`fixture ${selected.includes(f.id) ? 'chosen' : ''}`}><input type="checkbox" checked={selected.includes(f.id)} onChange={() => toggle(f.id)} /><div className="fixture-main"><small>{f.country} · {f.league}</small><div><span>{f.home}</span><b>{f.homeScore}</b></div><div><span>{f.away}</span><b>{f.awayScore}</b></div></div><span className="minute">{displayMatchMinute(f.status)}</span></label>)}
         </div>
       </aside>
       <section className="score-stage">{!Object.keys(matches).length && <div className="hero-empty"><div className="pulse-rings"><span /><span /><b>⚽</b></div><h2>試合を選択してください</h2><p>左のライブ一覧から最大25試合を選び、1本のSocketで同時監視できます。</p><div className="flow"><span>LIVE LIST<small>通常2 REST</small></span><i>→</i><span>SELECT<small>最大25試合</small></span><i>→</i><span>WEBSOCKET<small>更新消費 0</small></span></div></div>}
@@ -293,13 +294,12 @@ function isSelectedLeague(fixture: UpcomingFixture) {
 function normalize(value: string) { return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase(); }
 
 function MatchCard({ match, onCapture, onSelectSnapshot, onRemove, onRefresh }: { match: LiveMatch; onCapture: () => void; onSelectSnapshot: (id: string) => void; onRemove: () => void; onRefresh: () => void }) {
-  const status = /^\d+(?:\+\d+)?$/.test(match.status) ? `${match.status}'` : match.status;
+  const status = displayMatchMinute(match.status);
   const selectedSnapshot = match.snapshots.find((snapshot) => snapshot.id === match.selectedSnapshotId);
   const lastReceivedMs = Date.parse(match.lastReceivedAt ?? '');
   const stale = !match.ended && Number.isFinite(lastReceivedMs) && Date.now() - lastReceivedMs >= 90_000;
   const waitingForProvider = !match.ended && !match.updates && !match.stats.length && match.subscriptionState === 'subscribed_waiting';
-  const restSupplemented = Boolean(match.restFallbackAttemptedAt && match.stats.length && !match.updates);
-  return <article className="score-card"><div className="league-line"><span>{match.country} · {match.league}</span><span className="fixture-controls"><b>{status}</b>{!match.ended && <button className="refresh-fixture" onClick={onRefresh}>再subscribe</button>}<button onClick={onRemove}>{match.ended ? '一覧から外す' : '監視から外す'}</button></span></div><div className="scoreline"><div><span className="crest home">{match.home.slice(0, 2).toUpperCase()}</span><strong>{match.home}</strong></div><p><b>{match.homeScore}</b><i>–</i><b>{match.awayScore}</b></p><div><span className="crest away">{match.away.slice(0, 2).toUpperCase()}</span><strong>{match.away}</strong></div></div><div className={`update-line ${stale ? 'stale' : ''}`}><span className="live-pill">● {match.ended ? 'FINISHED' : restSupplemented ? 'REST SUPPLEMENT' : stale ? 'UPDATE STALE' : waitingForProvider ? 'SUBSCRIBED' : 'LIVE'}</span><span>{match.updatedAt ? `${restSupplemented ? 'Socket更新なし・REST一回補完 ' : '更新 '}${match.updatedAt} JST · #${match.updates}${stale ? ' · provider更新停止を検知' : ''}` : waitingForProvider ? 'subscribe成功・provider初回データ待ち' : 'subscribe応答待ち'}</span></div>
+  return <article className="score-card"><div className="league-line"><span>{match.country} · {match.league}</span><span className="fixture-controls"><b>{status}</b>{!match.ended && <button className="refresh-fixture" onClick={onRefresh}>再subscribe</button>}<button onClick={onRemove}>{match.ended ? '一覧から外す' : '監視から外す'}</button></span></div><div className="scoreline"><div><span className="crest home">{match.home.slice(0, 2).toUpperCase()}</span><strong>{match.home}</strong></div><p><b>{match.homeScore}</b><i>–</i><b>{match.awayScore}</b></p><div><span className="crest away">{match.away.slice(0, 2).toUpperCase()}</span><strong>{match.away}</strong></div></div><div className={`update-line ${stale ? 'stale' : ''}`}><span className="live-pill">● {match.ended ? 'FINISHED' : stale ? 'UPDATE STALE' : waitingForProvider ? 'SUBSCRIBED' : 'LIVE'}</span><span>{match.updatedAt ? `Socket更新 ${match.updatedAt} JST · #${match.updates}${stale ? ' · provider更新停止を検知' : ''}` : waitingForProvider ? 'subscribe成功・最初のSocket更新（分数・stats）待ち' : 'subscribe応答待ち'}</span></div>
     {match.htStats && <DeltaPanel match={match} />}
     <div className="snapshot-panel"><div className="snapshot-actions"><button onClick={onCapture} disabled={!match.stats.length}>現在値をスナップ（REST 0）</button><span>{match.snapshots.length ? `${match.snapshots.length}件保存` : '好きな時点を保存できます'}</span></div>{match.snapshots.length > 0 && <div className="snapshot-tabs">{match.snapshots.map((snapshot) => <button className={snapshot.id === match.selectedSnapshotId ? 'active' : ''} onClick={() => onSelectSnapshot(snapshot.id)} key={snapshot.id}>{formatSnapshotStatus(snapshot.status)} <small>{snapshot.capturedAt}</small></button>)}</div>}</div>
     {selectedSnapshot && <SnapshotDeltaPanel match={match} snapshot={selectedSnapshot} />}
@@ -333,7 +333,7 @@ function statDeltas(baseline: Stat[], target: Stat[]) {
   });
 }
 
-function formatSnapshotStatus(status: string) { return /^\d+(?:\+\d+)?$/.test(status) ? `${status}'` : status; }
+function formatSnapshotStatus(status: string) { return displayMatchMinute(status); }
 
 function eventFromMatch(sessionId: string, match: LiveMatch, eventType: string, payload: unknown, receivedAt = new Date().toISOString()): MonitorEvent {
   return { sessionId, fixtureId: match.id, eventType, receivedAt, status: match.status, home: match.home, away: match.away, homeScore: match.homeScore, awayScore: match.awayScore, payload };
