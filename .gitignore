@@ -13,3 +13,6 @@ __pycache__/
 *.py[cod]
 *.log
 .archive/
+# ensure local env files are ignored
+apps/web-dashboard/.env
+scripts/.env
