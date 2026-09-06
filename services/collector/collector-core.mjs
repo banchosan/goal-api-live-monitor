@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 
 const TERMINAL = new Set(['FT', 'FINISHED', 'AFTER_ET', 'AFTER_PEN', 'CANCELLED', 'ABANDONED', 'AWARDED']);
 const providerTimestamp = (data) => data?.timestamp ?? data?.updated_at ?? data?.updatedAt ?? null;
+const RECONNECT_DELAYS_MS = [5_000, 10_000, 20_000, 30_000];
+const DEGRADED_RECONNECT_DELAY_MS = 60_000;
 
 export class GoalApiCollector {
   constructor({ apiKey, fetchImpl = fetch, WebSocketImpl = WebSocket, persist = async () => {}, schedule = setTimeout, cancelSchedule = clearTimeout, now = () => new Date().toISOString() } = {}) {
@@ -9,6 +11,7 @@ export class GoalApiCollector {
     Object.assign(this, { apiKey, fetchImpl, WebSocketImpl, persist, schedule, cancelSchedule, now });
     this.sessionId = null; this.connectionId = null; this.sequence = 0; this.socket = null;
     this.fixtures = new Map(); this.desired = false; this.authenticated = false;
+    this.sessionStopped = true;
     this.reconnectAttempt = 0; this.reconnectTimer = null; this.goalApiRequests = 0;
     this.connectionState = 'idle'; this.lastError = null;
     this.currentConnectionIsReconnect = false;
@@ -22,7 +25,7 @@ export class GoalApiCollector {
     if (this.desired) await this.stop('replaced_by_new_session');
     this.sessionId = `${Date.now()}-${randomUUID()}`; this.sequence = 0;
     this.fixtures = new Map(selected.map((fixture) => [fixture.id, initialState(fixture)]));
-    this.desired = true; this.reconnectAttempt = 0; this.goalApiRequests = 0; this.lastError = null;
+    this.desired = true; this.sessionStopped = false; this.reconnectAttempt = 0; this.goalApiRequests = 0; this.lastError = null;
     await this.emitForActive('session_start', { selectedAt: this.now(), fixtureCount: selected.length }, { source: 'system' });
     void this.connect(false);
     return this.status();
@@ -39,9 +42,21 @@ export class GoalApiCollector {
     return this.status();
   }
 
+  async remove(fixtureId, reason = 'manual_fixture_unsubscribe') {
+    const fixture = this.fixtures.get(String(fixtureId));
+    if (!fixture) throw new Error('監視対象fixtureが見つかりません');
+    if (this.fixtures.size === 1) return this.stop(reason);
+    if (!fixture.ended && this.socket?.readyState === 1) {
+      this.socket.send(JSON.stringify({ type: 'unsubscribe', resource: 'match', matchId: fixture.id }));
+    }
+    await this.emit('unsubscribe', fixture, { reason, matchId: fixture.id }, { source: 'websocket' });
+    this.fixtures.delete(fixture.id);
+    return this.status();
+  }
+
   async stop(reason = 'manual_stop') {
-    if (!this.sessionId) return this.status();
-    this.desired = false; this.connectionState = 'stopping';
+    if (!this.sessionId || this.sessionStopped) return this.status();
+    this.desired = false; this.sessionStopped = true; this.connectionState = 'stopping';
     if (this.reconnectTimer) this.cancelSchedule(this.reconnectTimer); this.reconnectTimer = null;
     for (const fixture of this.fixtures.values()) if (!fixture.ended && this.socket?.readyState === 1) {
       this.socket.send(JSON.stringify({ type: 'unsubscribe', resource: 'match', matchId: fixture.id }));
@@ -56,8 +71,9 @@ export class GoalApiCollector {
   async token() {
     this.goalApiRequests += 1;
     const response = await this.fetchImpl('https://api.goal-api.com/v1/ws/token', { method: 'POST', headers: { Authorization: `Bearer ${this.apiKey}`, Accept: 'application/json' } });
-    const body = await response.json();
-    if (!response.ok) throw new Error(`/ws/token HTTP ${response.status}`);
+    const raw = typeof response.text === 'function' ? await response.text() : JSON.stringify(await response.json());
+    if (!response.ok) throw new Error(`/ws/token HTTP ${response.status}: ${raw.slice(0, 160)}`);
+    let body; try { body = JSON.parse(raw); } catch { throw new Error('/ws/tokenがJSON以外を返しました'); }
     const token = body?.data?.token ?? body?.token;
     if (!token) throw new Error('/ws/tokenにtokenがありません');
     return token;
@@ -81,7 +97,7 @@ export class GoalApiCollector {
     if (socket !== this.socket || !this.desired) return;
     let message; try { message = JSON.parse(String(event.data)); } catch { message = { type: 'unparsed', raw: String(event.data) }; }
     if (message.type === 'auth_success') {
-      this.authenticated = true; this.connectionState = 'live'; this.reconnectAttempt = 0;
+      this.authenticated = true; this.connectionState = 'live';
       await this.emitForActive('auth_success', message, { source: 'websocket' });
       for (const fixture of this.fixtures.values()) if (!fixture.ended) this.subscribe(fixture.id, this.currentConnectionIsReconnect);
       return;
@@ -99,11 +115,12 @@ export class GoalApiCollector {
     const data = message.data ?? {}; const fixtureId = String(data.id ?? data.fixture_id ?? data.fixtureId ?? ''); const fixture = this.fixtures.get(fixtureId); if (!fixture) return;
     const receivedAt = this.now(); const previousMinute = /^\d+$/.test(String(fixture.status)) ? Number(fixture.status) : null;
     const nextStatus = String(data.match_status ?? fixture.status); const minute = /^\d+$/.test(nextStatus) ? Number(nextStatus) : null;
-    const nextStats = Array.isArray(data.statistics) ? data.statistics : fixture.stats;
+    const nextStats = Array.isArray(data.statistics) ? mergeStatistics(fixture.stats, data.statistics) : fixture.stats;
     if (['HT', 'HALF_TIME', 'HALF TIME'].includes(nextStatus.toUpperCase()) && nextStats.length) fixture.htStats = structuredClone(nextStats);
     else if (!fixture.htStats && minute !== null && minute >= 46 && previousMinute !== null && previousMinute <= 45 && fixture.stats.length) fixture.htStats = structuredClone(fixture.stats);
     if (!fixture.sixtyStats && fixture.htStats && minute !== null && minute >= 60 && nextStats.length) { fixture.sixtyStats = structuredClone(nextStats); fixture.sixtyMinute = minute; }
     Object.assign(fixture, { home: data.match_hometeam_name ?? fixture.home, away: data.match_awayteam_name ?? fixture.away, homeScore: String(data.match_hometeam_score ?? fixture.homeScore), awayScore: String(data.match_awayteam_score ?? fixture.awayScore), status: nextStatus, stats: structuredClone(nextStats), updates: fixture.updates + 1, updatedAt: receivedAt, lastReceivedAt: receivedAt });
+    this.reconnectAttempt = 0;
     await this.emit('match_update', fixture, message, { source: 'websocket', receivedAt, providerTimestamp: providerTimestamp(data) });
     if (TERMINAL.has(nextStatus.toUpperCase()) || String(data.match_live) === '0') await this.finishFixture(fixture, message);
   }
@@ -117,7 +134,10 @@ export class GoalApiCollector {
   async finishFixture(fixture, raw) {
     if (fixture.ended) return; fixture.ended = true;
     await this.emit('fixture_end', fixture, raw, { source: 'websocket' });
-    if (this.socket?.readyState === 1) this.socket.send(JSON.stringify({ type: 'unsubscribe', resource: 'match', matchId: fixture.id }));
+    if (this.socket?.readyState === 1) {
+      this.socket.send(JSON.stringify({ type: 'unsubscribe', resource: 'match', matchId: fixture.id }));
+      await this.emit('unsubscribe', fixture, { reason: 'fixture_finished', matchId: fixture.id }, { source: 'websocket' });
+    }
     if ([...this.fixtures.values()].every((item) => item.ended)) await this.stop('all_fixtures_finished');
   }
 
@@ -129,7 +149,9 @@ export class GoalApiCollector {
 
   scheduleReconnect(reason) {
     if (!this.desired || this.reconnectTimer) return;
-    this.reconnectAttempt += 1; const delayMs = Math.min(1000 * 2 ** Math.min(this.reconnectAttempt - 1, 5), 30_000); this.connectionState = 'reconnect_wait';
+    this.reconnectAttempt += 1;
+    const delayMs = RECONNECT_DELAYS_MS[this.reconnectAttempt - 1] ?? DEGRADED_RECONNECT_DELAY_MS;
+    this.connectionState = 'reconnect_wait';
     void this.emitForActive('reconnect_scheduled', { reason, attempt: this.reconnectAttempt, delayMs }, { source: 'system' });
     this.reconnectTimer = this.schedule(() => { this.reconnectTimer = null; void this.connect(true); }, delayMs);
   }
@@ -143,3 +165,22 @@ export class GoalApiCollector {
 
 function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, ended: false, htStats: null, sixtyStats: null, sixtyMinute: null }; }
 function normalizeFixtures(fixtures) { return Array.isArray(fixtures) ? fixtures.filter((fixture) => fixture?.id).map((fixture) => ({ id: String(fixture.id), league: String(fixture.league ?? ''), country: String(fixture.country ?? ''), home: String(fixture.home ?? 'Home'), away: String(fixture.away ?? 'Away'), homeScore: String(fixture.homeScore ?? '-'), awayScore: String(fixture.awayScore ?? '-'), status: String(fixture.status ?? 'LIVE') })) : []; }
+
+export function mergeStatistics(previous, incoming) {
+  const merged = structuredClone(Array.isArray(previous) ? previous : []);
+  const seen = new Map();
+  for (const stat of Array.isArray(incoming) ? incoming : []) {
+    const type = String(stat?.type ?? '');
+    const occurrence = seen.get(type) ?? 0;
+    seen.set(type, occurrence + 1);
+    let found = -1; let matched = 0;
+    for (let index = 0; index < merged.length; index += 1) {
+      if (String(merged[index]?.type ?? '') !== type) continue;
+      if (matched === occurrence) { found = index; break; }
+      matched += 1;
+    }
+    if (found >= 0) merged[found] = structuredClone(stat);
+    else merged.push(structuredClone(stat));
+  }
+  return merged;
+}

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { visibleCollectorFixtures, withoutFixture } from '@/lib/live-monitor-state';
 
 type Fixture = { id: string; league: string; country: string; home: string; away: string; homeScore: string; awayScore: string; status: string };
 type UpcomingFixture = { id: string; league: string; country: string; home: string; away: string; homeTeamId: string; awayTeamId: string; kickoffUtc: string; kickoffJst: string; status: string };
@@ -27,6 +28,7 @@ export default function Home() {
   const [collectorRequests, setCollectorRequests] = useState(0);
   const sessionIdRef = useRef('');
   const matchesRef = useRef<Record<string, LiveMatch>>({});
+  const hiddenFixtureIdsRef = useRef(new Set<string>());
   const visible = useMemo(() => fixtures.filter((f) => `${f.home} ${f.away} ${f.league} ${f.country}`.toLowerCase().includes(query.toLowerCase())), [fixtures, query]);
   const additionalIds = selected.filter((id) => !matches[id]);
   const availableSlots = Math.max(0, 25 - Object.keys(matches).length);
@@ -67,6 +69,7 @@ export default function Home() {
   async function startMonitoring() {
     if (!selected.length) return;
     setConnection('connecting'); setMessage('Collectorへ監視開始を依頼中…');
+    hiddenFixtureIdsRef.current.clear();
     const initialMatches = Object.fromEntries(selected.map((id) => { const f = fixtures.find((x) => x.id === id)!; return [id, { ...f, stats: [], updates: 0, snapshots: [] }]; }));
     setMatches(initialMatches);
     try {
@@ -79,6 +82,7 @@ export default function Home() {
 
   function addSelectedMatches() {
     if (connection !== 'live' || !addableIds.length) return;
+    for (const id of addableIds) hiddenFixtureIdsRef.current.delete(id);
     setMatches((now) => {
       const additions = Object.fromEntries(addableIds.map((id) => {
         const fixture = fixtures.find((item) => item.id === id)!;
@@ -92,6 +96,25 @@ export default function Home() {
   function stopMonitoring() {
     setConnection('idle'); setMessage('Collectorを停止中…');
     void fetch('/api/collector', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'stop' }) }).then(() => setMessage('監視を停止しました。手動停止後は再接続しません。')).catch(() => setMessage('Collector停止を確認できませんでした'));
+  }
+
+  async function removeFromMonitoring(id: string) {
+    try {
+      const response = await fetch('/api/collector', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'remove', fixtureId: id, reason: 'manual_fixture_unsubscribe' }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || '個別解除に失敗しました');
+      hiddenFixtureIdsRef.current.add(id);
+      setMatches((now) => withoutFixture(now, id));
+      setSelected((now) => now.filter((fixtureId) => fixtureId !== id));
+      setMessage('対象試合だけ監視から外しました。過去データは保持されています。');
+    } catch (error) { setMessage(error instanceof Error ? error.message : '個別解除に失敗しました'); }
+  }
+
+  function hideFinishedFixture(id: string) {
+    hiddenFixtureIdsRef.current.add(id);
+    setMatches((now) => withoutFixture(now, id));
+    setSelected((now) => now.filter((fixtureId) => fixtureId !== id));
+    setMessage('終了試合を画面から外しました。raw/D1/timelineの履歴は保持されています。');
   }
 
   function captureSnapshot(id: string) {
@@ -119,7 +142,7 @@ export default function Home() {
         const data = await response.json(); if (cancelled) return;
         sessionIdRef.current = data.sessionId ?? ''; setCollectorRequests(Number(data.goalApiRequests ?? 0));
         setFrameCount((data.fixtures ?? []).reduce((sum: number, fixture: LiveMatch) => sum + Number(fixture.updates ?? 0), 0));
-        if (data.fixtures?.length) setMatches((current) => Object.fromEntries(data.fixtures.map((fixture: LiveMatch) => [fixture.id, { ...fixture, updatedAt: fixture.updatedAt ? new Date(fixture.updatedAt).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' }) : undefined, snapshots: current[fixture.id]?.snapshots ?? [], selectedSnapshotId: current[fixture.id]?.selectedSnapshotId }])));
+        if (data.fixtures?.length) setMatches((current) => Object.fromEntries(visibleCollectorFixtures(data.fixtures as LiveMatch[], hiddenFixtureIdsRef.current).map((fixture) => [fixture.id, { ...fixture, updatedAt: fixture.updatedAt ? new Date(fixture.updatedAt).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' }) : undefined, snapshots: current[fixture.id]?.snapshots ?? [], selectedSnapshotId: current[fixture.id]?.selectedSnapshotId }])));
         if (data.active && data.connectionState === 'live') { setConnection('live'); setMessage(`${data.fixtures.length}試合を独立Collectorで監視中。ブラウザを再読込しても収集は継続します。`); }
         else if (data.active) { setConnection('connecting'); setMessage(data.connectionState === 'reconnect_wait' ? `Socket切断を検知。再接続待機中（試行 ${data.reconnectAttempt}）` : 'CollectorがWebSocketへ接続中…'); }
         else setConnection((value) => value === 'error' ? value : 'idle');
@@ -150,7 +173,7 @@ export default function Home() {
         </div>
       </aside>
       <section className="score-stage">{!Object.keys(matches).length && <div className="hero-empty"><div className="pulse-rings"><span /><span /><b>⚽</b></div><h2>試合を選択してください</h2><p>左のライブ一覧から最大25試合を選び、1本のSocketで同時監視できます。</p><div className="flow"><span>LIVE LIST<small>通常2 REST</small></span><i>→</i><span>SELECT<small>最大25試合</small></span><i>→</i><span>WEBSOCKET<small>更新消費 0</small></span></div></div>}
-        <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} onCapture={() => captureSnapshot(m.id)} onSelectSnapshot={(snapshotId) => selectSnapshot(m.id, snapshotId)} />)}</div>
+        <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} onCapture={() => captureSnapshot(m.id)} onSelectSnapshot={(snapshotId) => selectSnapshot(m.id, snapshotId)} onRemove={() => m.ended ? hideFinishedFixture(m.id) : void removeFromMonitoring(m.id)} />)}</div>
       </section>
     </div> : <UpcomingBoard fixtures={upcomingFixtures} loading={upcomingLoading} onRest={(count) => setRestCount((value) => value + count)} />}
   </main>;
@@ -259,10 +282,10 @@ function isSelectedLeague(fixture: UpcomingFixture) {
 
 function normalize(value: string) { return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase(); }
 
-function MatchCard({ match, onCapture, onSelectSnapshot }: { match: LiveMatch; onCapture: () => void; onSelectSnapshot: (id: string) => void }) {
+function MatchCard({ match, onCapture, onSelectSnapshot, onRemove }: { match: LiveMatch; onCapture: () => void; onSelectSnapshot: (id: string) => void; onRemove: () => void }) {
   const status = /^\d+(?:\+\d+)?$/.test(match.status) ? `${match.status}'` : match.status;
   const selectedSnapshot = match.snapshots.find((snapshot) => snapshot.id === match.selectedSnapshotId);
-  return <article className="score-card"><div className="league-line"><span>{match.country} · {match.league}</span><b>{status}</b></div><div className="scoreline"><div><span className="crest home">{match.home.slice(0, 2).toUpperCase()}</span><strong>{match.home}</strong></div><p><b>{match.homeScore}</b><i>–</i><b>{match.awayScore}</b></p><div><span className="crest away">{match.away.slice(0, 2).toUpperCase()}</span><strong>{match.away}</strong></div></div><div className="update-line"><span className="live-pill">● LIVE</span><span>{match.updatedAt ? `更新 ${match.updatedAt} JST · #${match.updates}` : '初回データ待機中'}</span></div>
+  return <article className="score-card"><div className="league-line"><span>{match.country} · {match.league}</span><span className="fixture-controls"><b>{status}</b><button onClick={onRemove}>{match.ended ? '一覧から外す' : '監視から外す'}</button></span></div><div className="scoreline"><div><span className="crest home">{match.home.slice(0, 2).toUpperCase()}</span><strong>{match.home}</strong></div><p><b>{match.homeScore}</b><i>–</i><b>{match.awayScore}</b></p><div><span className="crest away">{match.away.slice(0, 2).toUpperCase()}</span><strong>{match.away}</strong></div></div><div className="update-line"><span className="live-pill">● {match.ended ? 'FINISHED' : 'LIVE'}</span><span>{match.updatedAt ? `更新 ${match.updatedAt} JST · #${match.updates}` : '初回データ待機中'}</span></div>
     {match.htStats && <DeltaPanel match={match} />}
     <div className="snapshot-panel"><div className="snapshot-actions"><button onClick={onCapture} disabled={!match.stats.length}>現在値をスナップ（REST 0）</button><span>{match.snapshots.length ? `${match.snapshots.length}件保存` : '好きな時点を保存できます'}</span></div>{match.snapshots.length > 0 && <div className="snapshot-tabs">{match.snapshots.map((snapshot) => <button className={snapshot.id === match.selectedSnapshotId ? 'active' : ''} onClick={() => onSelectSnapshot(snapshot.id)} key={snapshot.id}>{formatSnapshotStatus(snapshot.status)} <small>{snapshot.capturedAt}</small></button>)}</div>}</div>
     {selectedSnapshot && <SnapshotDeltaPanel match={match} snapshot={selectedSnapshot} />}
