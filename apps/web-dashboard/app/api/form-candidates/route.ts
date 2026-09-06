@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { monitorSchema } from '@/db/schema';
 import { fetchTeamResults, TEAM_RESULTS_CONCURRENCY } from '@/lib/team-results-client';
+import { evaluateFormCandidate, toChronologicalResults } from '@/lib/form-candidate-rules';
 
 export const dynamic = 'force-dynamic';
 
@@ -77,7 +78,10 @@ export async function POST(request: Request) {
         };
       }
       try {
-        const results = fetched.data.map((match: Record<string, any>) => resultForTeam(match, task.teamId)).filter(Boolean).slice(0, 5);
+        // GOAL API /teams/:id/results is newest-first. Keep the same five
+        // fixtures, then normalize to oldest-first so the rightmost result is
+        // consistently the most recent one in storage, UI and rule evaluation.
+        const results = toChronologicalResults(fetched.data.map((match: Record<string, any>) => resultForTeam(match, task.teamId)).filter(Boolean).slice(0, 5));
         const wins = results.filter((item: any) => item.result === 'W').length;
         const draws = results.filter((item: any) => item.result === 'D').length;
         return {
@@ -98,7 +102,22 @@ export async function POST(request: Request) {
     checked.push(...rows);
   }
 
-  const candidates = checked.filter((team) => team.played === 5 && (team.wins >= 4 || (team.wins === 3 && team.draws >= 1))).map((team) => ({
+  const evaluated = checked.map((team) => {
+    if (team.status !== 'success') return team;
+    return { ...team, formEvaluation: evaluateFormCandidate(team) };
+  });
+  checked.splice(0, checked.length, ...evaluated);
+
+  const excludedByRecentForm = checked.filter((team) => team.formEvaluation?.baseQualified && team.formEvaluation.recentTwoExcluded).map((team) => ({
+    teamId: team.teamId,
+    team: team.team,
+    fixtureId: team.fixture.id,
+    recentTwo: team.formEvaluation.recentTwo,
+    exclusionCode: team.formEvaluation.exclusionCode,
+    exclusionReason: team.formEvaluation.exclusionReason,
+  }));
+
+  const candidates = checked.filter((team) => team.formEvaluation?.qualified).map((team) => ({
     kickoffUtc: team.fixture.kickoffUtc,
     kickoffJst: team.fixture.kickoffJst,
     league: team.fixture.league,
@@ -124,5 +143,5 @@ export async function POST(request: Request) {
   let saved = true;
   try { await saveAnalysis({ runId, createdAt, checkedTeams: checked.length, failedTeams, apiRequests, candidates, checked }); }
   catch (error) { saved = false; console.error('form analysis save failed', error); }
-  return Response.json({ candidates, checkedTeams: checked.length, failedTeams, apiRequests, retryCount, outcomeCounts, runId, saved });
+  return Response.json({ candidates, excludedByRecentForm, excludedCount: excludedByRecentForm.length, checkedTeams: checked.length, failedTeams, apiRequests, retryCount, outcomeCounts, runId, saved });
 }

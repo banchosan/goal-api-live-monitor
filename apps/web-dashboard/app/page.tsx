@@ -179,7 +179,7 @@ function UpcomingBoard({ fixtures, loading, onRest }: { fixtures: UpcomingFixtur
       setFormRunId(data.runId ?? '');
       setOddsMessage('');
       const outcomes = Object.entries(data.outcomeCounts ?? {}).map(([name, count]) => `${name} ${count}`).join(' / ');
-      setAnalysisMessage(`${data.checkedTeams}チームを${data.apiRequests} RESTで確認（retry ${data.retryCount ?? 0}）。4勝以上または3勝＋1分以上は${data.candidates.length}チーム${data.failedTeams ? `（取得失敗 ${data.failedTeams}）` : ''}。${outcomes ? `内訳: ${outcomes}。` : ''}${data.saved ? '分析結果を履歴保存しました。' : '結果の保存だけ失敗しました。'}`);
+      setAnalysisMessage(`${data.checkedTeams}チームを${data.apiRequests} RESTで確認（retry ${data.retryCount ?? 0}）。最終候補は${data.candidates.length}チーム（直近2戦 LL / DL / LD により${data.excludedCount ?? 0}チーム除外）${data.failedTeams ? `（取得失敗 ${data.failedTeams}）` : ''}。${outcomes ? `内訳: ${outcomes}。` : ''}${data.saved ? '分析結果を履歴保存しました。' : '結果の保存だけ失敗しました。'}`);
     } catch (error) { setAnalysisMessage(error instanceof Error ? error.message : '分析エラー'); }
     finally { setAnalyzing(false); }
   }
@@ -204,7 +204,7 @@ function UpcomingBoard({ fixtures, loading, onRest }: { fixtures: UpcomingFixtur
       {analysisMessage && <div className="analysis-message">{analysisMessage}</div>}
       {candidates.length > 0 && <div className="odds-fetch-row"><button disabled={oddsLoading} onClick={fetchCandidateOdds}>{oddsLoading ? 'オッズ取得・保存中…' : `候補${new Set(candidates.map(c => c.fixtureId)).size}試合のオッズを取得・保存`}</button><a href="/odds">保存済みオッズを見る →</a></div>}
       {oddsMessage && <div className="analysis-message">{oddsMessage}</div>}
-      {candidates.length > 0 && <section className="candidate-section"><div className="candidate-title"><span>WATCH CANDIDATES</span><strong>直近5試合：4勝以上 または 3勝＋1分以上</strong></div><div className="candidate-grid">{candidates.map((candidate) => <article className="candidate-card" key={`${candidate.fixtureId}-${candidate.team}`}><div><time>{candidate.kickoffJst} JST</time><b>{candidate.wins}W {candidate.draws}D / 5</b></div><h3>{candidate.team}</h3><p>{candidate.side.toUpperCase()} vs {candidate.opponent}</p><small>{candidate.country} · {candidate.league}</small><div className="form-strip">{candidate.last5.map((result, index) => <span className={result.result.toLowerCase()} title={`${result.opponent} ${result.score}`} key={`${result.fixtureId}-${index}`}>{result.result}</span>)}</div></article>)}</div></section>}
+      {candidates.length > 0 && <section className="candidate-section"><div className="candidate-title"><span>WATCH CANDIDATES</span><strong>4勝以上 または 3勝＋1分以上（直近2戦 LL / DL / LD は除外）</strong></div><div className="candidate-grid">{candidates.map((candidate) => <article className="candidate-card" key={`${candidate.fixtureId}-${candidate.team}`}><div><time>{candidate.kickoffJst} JST</time><b>{candidate.wins}W {candidate.draws}D / 5</b></div><h3>{candidate.team}</h3><p>{candidate.side.toUpperCase()} vs {candidate.opponent}</p><small>{candidate.country} · {candidate.league}</small><div className="form-strip">{candidate.last5.map((result, index) => <span className={result.result.toLowerCase()} title={`${result.opponent} ${result.score}`} key={`${result.fixtureId}-${index}`}>{result.result}</span>)}</div></article>)}</div></section>}
       <div className="upcoming-list">{shown.map((fixture) => <article className="upcoming-row" key={fixture.id}>
         <time dateTime={fixture.kickoffUtc}><strong>{fixture.kickoffJst}</strong><small>JST</small></time>
         <div className="upcoming-teams"><span>{fixture.home}</span><i>vs</i><span>{fixture.away}</span></div>
