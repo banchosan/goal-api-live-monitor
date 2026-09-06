@@ -1,0 +1,56 @@
+#!/bin/sh
+# Pre-commit hook to prevent committing secrets and backup bundles
+set -e
+
+echo "[pre-commit] Running secret-safety checks..."
+
+# Get list of staged files
+STAGED=$(git diff --cached --name-only -z | tr '\0' '\n')
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+for f in $STAGED; do
+  # Block root or subdir .env files
+  echo "$f" | grep -Eq '(^|/)\.env$|(^|/)\.env\.' && {
+    echo "ERROR: Attempt to commit .env file: $f" >&2
+    echo "Please remove secrets before committing." >&2
+    exit 1
+  }
+
+  # Block backup bundles
+  echo "$f" | grep -Eq '^backup-.*\.bundle$' && {
+    echo "ERROR: Attempt to commit backup bundle: $f" >&2
+    exit 1
+  }
+
+  # Block private key files by extension
+  echo "$f" | grep -Ei '\.pem$|\.key$|\.p12$' && {
+    echo "ERROR: Attempt to commit private key file: $f" >&2
+    exit 1
+  }
+
+  # Inspect staged contents for private key blocks (look for BEGIN and PRIVATE KEY)
+  # Skip content scanning for hook/workflow and docs files that legitimately
+  # contain these literal strings as part of regexes or examples.
+  echo "$f" | grep -Eq '^\.githooks/|^\.github/' && continue
+
+  if git show ":$f" 2>/dev/null | grep -q -- '-----BEGIN' && git show ":$f" 2>/dev/null | grep -q -- 'PRIVATE KEY'; then
+    echo "ERROR: Private key content detected in staged file: $f" >&2
+    exit 1
+  fi
+done
+
+# Check .env.example does not contain real key values
+if echo "$STAGED" | grep -qx '.env.example'; then
+  # If .env.example is staged, ensure it contains placeholder (very lenient check)
+  if git show :'.env.example' | grep -Eq 'replace_with_your_api_key|replace'; then
+    : # ok
+  else
+    echo "ERROR: .env.example appears to contain real values; ensure only placeholders are present." >&2
+    exit 1
+  fi
+fi
+
+echo "[pre-commit] secret-safety checks passed."
+exit 0

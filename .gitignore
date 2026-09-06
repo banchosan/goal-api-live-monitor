@@ -16,3 +16,9 @@ __pycache__/
 # ensure local env files are ignored
 apps/web-dashboard/.env
 scripts/.env
+*.pem
+*.key
+*.p12
+backup-*.bundle
+**/.env
+.env.local
