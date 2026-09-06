@@ -4,6 +4,10 @@ const TERMINAL = new Set(['FT', 'FINISHED', 'AFTER_ET', 'AFTER_PEN', 'CANCELLED'
 const providerTimestamp = (data) => data?.timestamp ?? data?.updated_at ?? data?.updatedAt ?? null;
 const RECONNECT_DELAYS_MS = [5_000, 10_000, 20_000, 30_000];
 const DEGRADED_RECONNECT_DELAY_MS = 60_000;
+const INITIAL_UPDATE_WAIT_MS = 45_000;
+const FIXTURE_STALE_MS = 90_000;
+const SOCKET_STALE_MS = 120_000;
+const REFRESH_COOLDOWN_MS = 120_000;
 
 export class GoalApiCollector {
   constructor({ apiKey, fetchImpl = fetch, WebSocketImpl = WebSocket, persist = async () => {}, schedule = setTimeout, cancelSchedule = clearTimeout, now = () => new Date().toISOString() } = {}) {
@@ -13,11 +17,11 @@ export class GoalApiCollector {
     this.fixtures = new Map(); this.desired = false; this.authenticated = false;
     this.sessionStopped = true;
     this.reconnectAttempt = 0; this.reconnectTimer = null; this.goalApiRequests = 0;
-    this.connectionState = 'idle'; this.lastError = null;
+    this.connectionState = 'idle'; this.lastError = null; this.lastSocketActivityAt = null;
     this.currentConnectionIsReconnect = false;
   }
 
-  status() { return { active: this.desired, sessionId: this.sessionId, connectionId: this.connectionId, connectionState: this.connectionState, authenticated: this.authenticated, reconnectAttempt: this.reconnectAttempt, goalApiRequests: this.goalApiRequests, lastError: this.lastError, fixtures: [...this.fixtures.values()].map((fixture) => structuredClone(fixture)) }; }
+  status() { return { active: this.desired, sessionId: this.sessionId, connectionId: this.connectionId, connectionState: this.connectionState, authenticated: this.authenticated, reconnectAttempt: this.reconnectAttempt, goalApiRequests: this.goalApiRequests, lastError: this.lastError, lastSocketActivityAt: this.lastSocketActivityAt, fixtures: [...this.fixtures.values()].map((fixture) => structuredClone(fixture)) }; }
 
   async start(fixtures) {
     const selected = normalizeFixtures(fixtures).slice(0, 25);
@@ -25,7 +29,7 @@ export class GoalApiCollector {
     if (this.desired) await this.stop('replaced_by_new_session');
     this.sessionId = `${Date.now()}-${randomUUID()}`; this.sequence = 0;
     this.fixtures = new Map(selected.map((fixture) => [fixture.id, initialState(fixture)]));
-    this.desired = true; this.sessionStopped = false; this.reconnectAttempt = 0; this.goalApiRequests = 0; this.lastError = null;
+    this.desired = true; this.sessionStopped = false; this.reconnectAttempt = 0; this.goalApiRequests = 0; this.lastError = null; this.lastSocketActivityAt = null;
     await this.emitForActive('session_start', { selectedAt: this.now(), fixtureCount: selected.length }, { source: 'system' });
     void this.connect(false);
     return this.status();
@@ -52,6 +56,59 @@ export class GoalApiCollector {
     await this.emit('unsubscribe', fixture, { reason, matchId: fixture.id }, { source: 'websocket' });
     this.fixtures.delete(fixture.id);
     return this.status();
+  }
+
+  async refresh(fixtureId, reason = 'manual_resubscribe') {
+    const fixture = this.fixtures.get(String(fixtureId));
+    if (!fixture || fixture.ended) throw new Error('監視対象fixtureが見つかりません');
+    if (!this.authenticated || !this.socket || this.socket.readyState !== 1) throw new Error('Socketが接続されていません');
+    fixture.lastRefreshAt = this.now(); fixture.subscriptionState = 'refreshing';
+    this.socket.send(JSON.stringify({ type: 'unsubscribe', resource: 'match', matchId: fixture.id }));
+    await this.emit('unsubscribe', fixture, { reason, matchId: fixture.id }, { source: 'websocket' });
+    this.subscribe(fixture.id, true, reason);
+    return this.status();
+  }
+
+  async supplementStatistics(fixture, reason) {
+    fixture.restFallbackAttemptedAt = this.now();
+    this.goalApiRequests += 1;
+    try {
+      const response = await this.fetchImpl(`https://api.goal-api.com/v1/fixtures/${encodeURIComponent(fixture.id)}/statistics`, {
+        headers: { Authorization: `Bearer ${this.apiKey}`, Accept: 'application/json' },
+        signal: AbortSignal.timeout(12_000),
+      });
+      const raw = typeof response.text === 'function' ? await response.text() : JSON.stringify(await response.json());
+      if (!response.ok) throw new Error(`HTTP ${response.status}: ${raw.slice(0, 160)}`);
+      let payload; try { payload = JSON.parse(raw); } catch { throw new Error('invalid JSON'); }
+      const fullTime = payload?.data?.match?.fullTime;
+      if (Array.isArray(fullTime)) fixture.stats = mergeStatistics(fixture.stats, fullTime);
+      fixture.updatedAt = this.now(); fixture.subscriptionState = fullTime?.length ? 'rest_supplemented' : 'provider_no_statistics';
+      await this.emit('rest_fallback', fixture, { reason, response: payload, appliedStatistics: Array.isArray(fullTime) ? fullTime.length : 0 }, { source: 'rest' });
+    } catch (error) {
+      await this.emit('rest_fallback_error', fixture, { reason, error: error instanceof Error ? error.message : String(error) }, { source: 'rest' });
+    }
+  }
+
+  async checkHealth() {
+    if (!this.desired || !this.authenticated || !this.socket || this.socket.readyState !== 1) return;
+    const currentMs = Date.parse(this.now());
+    const socketActivityMs = Date.parse(this.lastSocketActivityAt ?? '');
+    if (Number.isFinite(socketActivityMs) && currentMs - socketActivityMs >= SOCKET_STALE_MS) {
+      await this.emitForActive('socket_stale', { lastSocketActivityAt: this.lastSocketActivityAt, staleMs: currentMs - socketActivityMs }, { source: 'system' });
+      try { this.socket.close(4000, 'socket activity timeout'); } catch {}
+      return;
+    }
+    for (const fixture of this.fixtures.values()) {
+      if (fixture.ended || fixture.subscriptionState === 'pending' || fixture.subscriptionState === 'refreshing') continue;
+      const referenceMs = Date.parse(fixture.lastReceivedAt ?? fixture.subscribedAt ?? '');
+      if (!Number.isFinite(referenceMs)) continue;
+      const staleAfterMs = fixture.lastReceivedAt ? FIXTURE_STALE_MS : INITIAL_UPDATE_WAIT_MS;
+      const lastRefreshMs = Date.parse(fixture.lastRefreshAt ?? '');
+      if (currentMs - referenceMs >= staleAfterMs && (!Number.isFinite(lastRefreshMs) || currentMs - lastRefreshMs >= REFRESH_COOLDOWN_MS)) {
+        if (!fixture.restFallbackAttemptedAt) await this.supplementStatistics(fixture, fixture.lastReceivedAt ? 'socket_updates_stale' : 'initial_socket_update_missing');
+        await this.refresh(fixture.id, 'stale_fixture_no_updates');
+      }
+    }
   }
 
   async stop(reason = 'manual_stop') {
@@ -95,6 +152,7 @@ export class GoalApiCollector {
 
   async handleMessage(socket, event) {
     if (socket !== this.socket || !this.desired) return;
+    this.lastSocketActivityAt = this.now();
     let message; try { message = JSON.parse(String(event.data)); } catch { message = { type: 'unparsed', raw: String(event.data) }; }
     if (message.type === 'auth_success') {
       this.authenticated = true; this.connectionState = 'live';
@@ -109,6 +167,10 @@ export class GoalApiCollector {
     if (message.type === 'subscribe_response' || message.type === 'unsubscribe_response') {
       const fixtureId = String(message?.data?.matchId ?? message?.matchId ?? ''); const fixture = this.fixtures.get(fixtureId);
       const type = message.type === 'subscribe_response' ? message.success ? 'subscribe_success' : 'subscribe_failure' : message.success ? 'unsubscribe_success' : 'unsubscribe_failure';
+      if (fixture && message.type === 'subscribe_response') {
+        fixture.subscriptionState = message.success ? 'subscribed_waiting' : 'failed';
+        fixture.subscribedAt = this.now();
+      }
       if (fixture) await this.emit(type, fixture, message, { source: 'websocket' }); else await this.emitForActive(type, message, { source: 'websocket' }); return;
     }
     if (message.type !== 'match_update') { await this.emitForActive('websocket_frame', message, { source: 'websocket' }); return; }
@@ -120,15 +182,17 @@ export class GoalApiCollector {
     else if (!fixture.htStats && minute !== null && minute >= 46 && previousMinute !== null && previousMinute <= 45 && fixture.stats.length) fixture.htStats = structuredClone(fixture.stats);
     if (!fixture.sixtyStats && fixture.htStats && minute !== null && minute >= 60 && nextStats.length) { fixture.sixtyStats = structuredClone(nextStats); fixture.sixtyMinute = minute; }
     Object.assign(fixture, { home: data.match_hometeam_name ?? fixture.home, away: data.match_awayteam_name ?? fixture.away, homeScore: String(data.match_hometeam_score ?? fixture.homeScore), awayScore: String(data.match_awayteam_score ?? fixture.awayScore), status: nextStatus, stats: structuredClone(nextStats), updates: fixture.updates + 1, updatedAt: receivedAt, lastReceivedAt: receivedAt });
+    fixture.subscriptionState = 'receiving';
     this.reconnectAttempt = 0;
     await this.emit('match_update', fixture, message, { source: 'websocket', receivedAt, providerTimestamp: providerTimestamp(data) });
     if (TERMINAL.has(nextStatus.toUpperCase()) || String(data.match_live) === '0') await this.finishFixture(fixture, message);
   }
 
-  subscribe(fixtureId, reconnect) {
+  subscribe(fixtureId, reconnect, reason = reconnect ? 'socket_reconnect' : 'initial_subscribe') {
     const fixture = this.fixtures.get(fixtureId); if (!fixture || !this.socket || this.socket.readyState !== 1) return;
+    fixture.subscriptionState = 'pending'; fixture.subscribeRequestedAt = this.now();
     this.socket.send(JSON.stringify({ type: 'subscribe', resource: 'match', matchId: fixtureId }));
-    void this.emit(reconnect ? 'resubscribe' : 'subscribe', fixture, { matchId: fixtureId }, { source: 'websocket' });
+    void this.emit(reconnect ? 'resubscribe' : 'subscribe', fixture, { matchId: fixtureId, reason }, { source: 'websocket' });
   }
 
   async finishFixture(fixture, raw) {
@@ -163,7 +227,7 @@ export class GoalApiCollector {
   }
 }
 
-function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, ended: false, htStats: null, sixtyStats: null, sixtyMinute: null }; }
+function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, ended: false, htStats: null, sixtyStats: null, sixtyMinute: null, subscriptionState: 'not_subscribed', subscribeRequestedAt: null, subscribedAt: null, lastRefreshAt: null, restFallbackAttemptedAt: null }; }
 function normalizeFixtures(fixtures) { return Array.isArray(fixtures) ? fixtures.filter((fixture) => fixture?.id).map((fixture) => ({ id: String(fixture.id), league: String(fixture.league ?? ''), country: String(fixture.country ?? ''), home: String(fixture.home ?? 'Home'), away: String(fixture.away ?? 'Away'), homeScore: String(fixture.homeScore ?? '-'), awayScore: String(fixture.awayScore ?? '-'), status: String(fixture.status ?? 'LIVE') })) : []; }
 
 export function mergeStatistics(previous, incoming) {

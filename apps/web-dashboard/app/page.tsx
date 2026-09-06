@@ -8,7 +8,7 @@ type UpcomingFixture = { id: string; league: string; country: string; home: stri
 type FormCandidate = { kickoffUtc: string; kickoffJst: string; league: string; country: string; fixtureId: string; team: string; side: 'home' | 'away'; opponent: string; wins: number; draws: number; last5: { result: string; score: string; opponent: string; fixtureId: string }[] };
 type Stat = { type: string; home: string | number | null; away: string | number | null };
 type ManualSnapshot = { id: string; status: string; capturedAt: string; stats: Stat[] };
-type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; lastReceivedAt?: string; updates: number; ended?: boolean; htStats?: Stat[] | null; sixtyStats?: Stat[] | null; sixtyMinute?: number | null; snapshots: ManualSnapshot[]; selectedSnapshotId?: string };
+type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; lastReceivedAt?: string; updates: number; ended?: boolean; htStats?: Stat[] | null; sixtyStats?: Stat[] | null; sixtyMinute?: number | null; subscriptionState?: string; restFallbackAttemptedAt?: string | null; snapshots: ManualSnapshot[]; selectedSnapshotId?: string };
 type MonitorEvent = { sessionId: string; fixtureId: string; eventType: string; receivedAt: string; status?: string; home?: string; away?: string; homeScore?: string; awayScore?: string; payload: unknown };
 
 export default function Home() {
@@ -118,6 +118,15 @@ export default function Home() {
     setMessage('終了試合を画面から外しました。raw/D1/timelineの履歴は保持されています。');
   }
 
+  async function refreshSubscription(id: string) {
+    try {
+      const response = await fetch('/api/collector', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'refresh', fixtureId: id, reason: 'manual_dashboard_resubscribe' }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || '再subscribeに失敗しました');
+      setMessage('対象試合を再subscribeしました。GOAL API REST消費は0です。');
+    } catch (error) { setMessage(error instanceof Error ? error.message : '再subscribeに失敗しました'); }
+  }
+
   function captureSnapshot(id: string) {
     const match = matchesRef.current[id];
     if (!match || !match.stats.length) return;
@@ -174,7 +183,7 @@ export default function Home() {
         </div>
       </aside>
       <section className="score-stage">{!Object.keys(matches).length && <div className="hero-empty"><div className="pulse-rings"><span /><span /><b>⚽</b></div><h2>試合を選択してください</h2><p>左のライブ一覧から最大25試合を選び、1本のSocketで同時監視できます。</p><div className="flow"><span>LIVE LIST<small>通常2 REST</small></span><i>→</i><span>SELECT<small>最大25試合</small></span><i>→</i><span>WEBSOCKET<small>更新消費 0</small></span></div></div>}
-        <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} onCapture={() => captureSnapshot(m.id)} onSelectSnapshot={(snapshotId) => selectSnapshot(m.id, snapshotId)} onRemove={() => m.ended ? hideFinishedFixture(m.id) : void removeFromMonitoring(m.id)} />)}</div>
+        <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} onCapture={() => captureSnapshot(m.id)} onSelectSnapshot={(snapshotId) => selectSnapshot(m.id, snapshotId)} onRemove={() => m.ended ? hideFinishedFixture(m.id) : void removeFromMonitoring(m.id)} onRefresh={() => void refreshSubscription(m.id)} />)}</div>
       </section>
     </div> : <UpcomingBoard fixtures={upcomingFixtures} loading={upcomingLoading} onRest={(count) => setRestCount((value) => value + count)} />}
   </main>;
@@ -283,10 +292,14 @@ function isSelectedLeague(fixture: UpcomingFixture) {
 
 function normalize(value: string) { return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase(); }
 
-function MatchCard({ match, onCapture, onSelectSnapshot, onRemove }: { match: LiveMatch; onCapture: () => void; onSelectSnapshot: (id: string) => void; onRemove: () => void }) {
+function MatchCard({ match, onCapture, onSelectSnapshot, onRemove, onRefresh }: { match: LiveMatch; onCapture: () => void; onSelectSnapshot: (id: string) => void; onRemove: () => void; onRefresh: () => void }) {
   const status = /^\d+(?:\+\d+)?$/.test(match.status) ? `${match.status}'` : match.status;
   const selectedSnapshot = match.snapshots.find((snapshot) => snapshot.id === match.selectedSnapshotId);
-  return <article className="score-card"><div className="league-line"><span>{match.country} · {match.league}</span><span className="fixture-controls"><b>{status}</b><button onClick={onRemove}>{match.ended ? '一覧から外す' : '監視から外す'}</button></span></div><div className="scoreline"><div><span className="crest home">{match.home.slice(0, 2).toUpperCase()}</span><strong>{match.home}</strong></div><p><b>{match.homeScore}</b><i>–</i><b>{match.awayScore}</b></p><div><span className="crest away">{match.away.slice(0, 2).toUpperCase()}</span><strong>{match.away}</strong></div></div><div className="update-line"><span className="live-pill">● {match.ended ? 'FINISHED' : 'LIVE'}</span><span>{match.updatedAt ? `更新 ${match.updatedAt} JST · #${match.updates}` : '初回データ待機中'}</span></div>
+  const lastReceivedMs = Date.parse(match.lastReceivedAt ?? '');
+  const stale = !match.ended && Number.isFinite(lastReceivedMs) && Date.now() - lastReceivedMs >= 90_000;
+  const waitingForProvider = !match.ended && !match.updates && !match.stats.length && match.subscriptionState === 'subscribed_waiting';
+  const restSupplemented = Boolean(match.restFallbackAttemptedAt && match.stats.length && !match.updates);
+  return <article className="score-card"><div className="league-line"><span>{match.country} · {match.league}</span><span className="fixture-controls"><b>{status}</b>{!match.ended && <button className="refresh-fixture" onClick={onRefresh}>再subscribe</button>}<button onClick={onRemove}>{match.ended ? '一覧から外す' : '監視から外す'}</button></span></div><div className="scoreline"><div><span className="crest home">{match.home.slice(0, 2).toUpperCase()}</span><strong>{match.home}</strong></div><p><b>{match.homeScore}</b><i>–</i><b>{match.awayScore}</b></p><div><span className="crest away">{match.away.slice(0, 2).toUpperCase()}</span><strong>{match.away}</strong></div></div><div className={`update-line ${stale ? 'stale' : ''}`}><span className="live-pill">● {match.ended ? 'FINISHED' : restSupplemented ? 'REST SUPPLEMENT' : stale ? 'UPDATE STALE' : waitingForProvider ? 'SUBSCRIBED' : 'LIVE'}</span><span>{match.updatedAt ? `${restSupplemented ? 'Socket更新なし・REST一回補完 ' : '更新 '}${match.updatedAt} JST · #${match.updates}${stale ? ' · provider更新停止を検知' : ''}` : waitingForProvider ? 'subscribe成功・provider初回データ待ち' : 'subscribe応答待ち'}</span></div>
     {match.htStats && <DeltaPanel match={match} />}
     <div className="snapshot-panel"><div className="snapshot-actions"><button onClick={onCapture} disabled={!match.stats.length}>現在値をスナップ（REST 0）</button><span>{match.snapshots.length ? `${match.snapshots.length}件保存` : '好きな時点を保存できます'}</span></div>{match.snapshots.length > 0 && <div className="snapshot-tabs">{match.snapshots.map((snapshot) => <button className={snapshot.id === match.selectedSnapshotId ? 'active' : ''} onClick={() => onSelectSnapshot(snapshot.id)} key={snapshot.id}>{formatSnapshotStatus(snapshot.status)} <small>{snapshot.capturedAt}</small></button>)}</div>}</div>
     {selectedSnapshot && <SnapshotDeltaPanel match={match} snapshot={selectedSnapshot} />}
