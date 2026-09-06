@@ -84,7 +84,7 @@ python3 scripts/analyze_saved_goal_api_data.py
 
 ## 確認済み仕様
 
-- `/fixtures/live` は試合数に関係なく1 REST request
+- ライブ一覧は `/fixtures?status=LIVE` と `status=HALF_TIME` をpagination付きで取得します。通常は2 REST requestで、各statusが100件を超える場合は次ページ分が増えます
 - 今後24時間は `/fixtures?from=...&to=...&status=SCHEDULED` を取得後、`kickoffUtc`で厳密に絞り込む
 - `/fixtures` の実API上の `limit` は最大100件（公開OpenAPIの500件表記とは不一致）
 - Freeプラン実測: 1 WebSocket connection / 最大25 match subscriptions
