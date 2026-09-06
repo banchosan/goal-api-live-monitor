@@ -52,3 +52,31 @@ test('continues beyond the previous three-page ceiling', async () => {
   assert.equal(result.fixtures.length, 4);
   assert.deepEqual(calls, ['LIVE:0', 'LIVE:100', 'LIVE:200', 'LIVE:300', 'HALF_TIME:0']);
 });
+
+test('returns fixtures from the healthy status when the other status fails', async () => {
+  const calls = [];
+  const result = await fetchAllLiveFixtures('secret', async (input) => {
+    const status = new URL(input).searchParams.get('status'); calls.push(status);
+    if (status === 'LIVE') throw new Error('upstream unavailable');
+    return { ok: true, status: 200, json: async () => ({ data: [fixture('ht-1')], pagination: { hasMore: false } }) };
+  });
+  assert.deepEqual(result.fixtures.map((item) => item.id), ['ht-1']);
+  assert.deepEqual(calls, ['LIVE', 'HALF_TIME']);
+  assert.deepEqual(result.errors, [{ status: 'LIVE', offset: 0, reason: 'upstream unavailable' }]);
+});
+
+test('fails clearly after both statuses fail instead of returning a false zero', async () => {
+  let calls = 0;
+  await assert.rejects(() => fetchAllLiveFixtures('secret', async () => { calls += 1; throw new Error('502'); }), /LIVE@0 502.*HALF_TIME@0 502/);
+  assert.equal(calls, 2);
+});
+
+test('aborts stalled requests and always settles', async () => {
+  let calls = 0;
+  const stalledFetch = (_input, init) => new Promise((_resolve, reject) => {
+    calls += 1;
+    init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+  });
+  await assert.rejects(() => fetchAllLiveFixtures('secret', stalledFetch, { requestTimeoutMs: 5 }), /timeout/);
+  assert.equal(calls, 2);
+});

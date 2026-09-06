@@ -37,13 +37,14 @@ export default function Home() {
   async function loadFixtures() {
     setLoading(true); setMessage('GOAL APIからライブ試合を取得中…');
     try {
-      const response = await fetch('/api/live', { cache: 'no-store' });
+      const response = await fetch('/api/live', { cache: 'no-store', signal: AbortSignal.timeout(30_000) });
       const data = await response.json();
       const headerCalls = Number(response.headers.get('X-GoalApi-Calls'));
       setRestCount((v) => v + Number(data.apiRequests ?? (Number.isFinite(headerCalls) ? headerCalls : 1)));
       if (!response.ok) throw new Error(data.error || 'ライブ一覧を取得できませんでした');
-      setFixtures(data.fixtures); setMessage(`${data.fixtures.length}試合を取得しました（GOAL API ${data.apiRequests ?? headerCalls} REST request）。監視する試合を選択してください。`);
-    } catch (error) { setMessage(error instanceof Error ? error.message : '取得エラー'); }
+      const warning = Array.isArray(data.warnings) && data.warnings.length ? ` 一部取得失敗: ${data.warnings.map((item: { status: string; reason: string }) => `${item.status} ${item.reason}`).join(' / ')}` : '';
+      setFixtures(data.fixtures); setMessage(`${data.fixtures.length}試合を取得しました（GOAL API ${data.apiRequests ?? headerCalls} REST request）。監視する試合を選択してください。${warning}`);
+    } catch (error) { setMessage(error instanceof Error && error.name === 'TimeoutError' ? 'ライブ取得が30秒でタイムアウトしました。GOAL API側の一時障害です。少し待って再実行してください。' : error instanceof Error ? error.message : '取得エラー'); }
     finally { setLoading(false); }
   }
 

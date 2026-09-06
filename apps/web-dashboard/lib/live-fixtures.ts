@@ -23,6 +23,12 @@ export type LiveFixturePage = {
   hasMore: boolean | null;
 };
 
+export type LiveFixtureFetchError = {
+  status: string;
+  offset: number;
+  reason: string;
+};
+
 const PAGE_LIMIT = 100;
 const MAX_PAGES_PER_STATUS = 20;
 
@@ -35,11 +41,14 @@ function rowsFrom(payload: GoalApiPage): unknown[] {
 export async function fetchAllLiveFixtures(
   apiKey: string,
   fetchImpl: FetchLike = fetch,
-): Promise<{ fixtures: Record<string, unknown>[]; apiCalls: number; pages: LiveFixturePage[] }> {
+  options: { requestTimeoutMs?: number } = {},
+): Promise<{ fixtures: Record<string, unknown>[]; apiCalls: number; pages: LiveFixturePage[]; errors: LiveFixtureFetchError[] }> {
   const fixtures: Record<string, unknown>[] = [];
   const seen = new Set<string>();
   const pages: LiveFixturePage[] = [];
+  const errors: LiveFixtureFetchError[] = [];
   let apiCalls = 0;
+  const requestTimeoutMs = options.requestTimeoutMs ?? 12_000;
 
   for (const status of LIVE_FIXTURE_STATUSES) {
     let offset = 0;
@@ -49,54 +58,63 @@ export async function fetchAllLiveFixtures(
       url.searchParams.set('limit', String(PAGE_LIMIT));
       url.searchParams.set('offset', String(offset));
 
-      const response = await fetchImpl(url.toString(), {
-        headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
-        cache: 'no-store',
-      });
       apiCalls += 1;
-      let payload: GoalApiPage;
       try {
-        payload = await response.json() as GoalApiPage;
-      } catch {
-        throw new Error(`GOAL API invalid JSON (status=${status}, offset=${offset})`);
+        const response = await fetchImpl(url.toString(), {
+          headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+          cache: 'no-store',
+          signal: AbortSignal.timeout(requestTimeoutMs),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        let payload: GoalApiPage;
+        try { payload = await response.json() as GoalApiPage; }
+        catch { throw new Error('invalid JSON'); }
+
+        const raw = rowsFrom(payload);
+        const pagination = payload.pagination;
+        pages.push({
+          status,
+          offset,
+          count: raw.length,
+          total: Number.isFinite(pagination?.total) ? Number(pagination?.total) : null,
+          hasMore: typeof pagination?.hasMore === 'boolean' ? pagination.hasMore : null,
+        });
+
+        for (const value of raw) {
+          if (!value || typeof value !== 'object') continue;
+          const fixture = value as Record<string, unknown>;
+          const idValue = fixture.id ?? fixture.fixture_id ?? fixture.fixtureId;
+          if (idValue === null || idValue === undefined || idValue === '') continue;
+          const id = String(idValue);
+          if (seen.has(id)) continue;
+          seen.add(id);
+          fixtures.push(fixture);
+        }
+
+        const hasMore = typeof pagination?.hasMore === 'boolean'
+          ? pagination.hasMore
+          : raw.length === PAGE_LIMIT;
+        if (!hasMore) break;
+
+        const serverOffset = Number.isFinite(pagination?.offset) ? Number(pagination?.offset) : offset;
+        const serverLimit = Number.isFinite(pagination?.limit) && Number(pagination?.limit) > 0
+          ? Number(pagination?.limit)
+          : PAGE_LIMIT;
+        const nextOffset = serverOffset + serverLimit;
+        if (nextOffset <= offset) throw new Error('pagination did not advance');
+        offset = nextOffset;
+      } catch (error) {
+        const reason = error instanceof Error && error.name === 'TimeoutError'
+          ? `${requestTimeoutMs}ms timeout`
+          : error instanceof Error ? error.message : String(error);
+        errors.push({ status, offset, reason });
+        break;
       }
-      if (!response.ok) throw new Error(`GOAL API HTTP ${response.status} (status=${status}, offset=${offset})`);
-
-      const raw = rowsFrom(payload);
-      const pagination = payload.pagination;
-      pages.push({
-        status,
-        offset,
-        count: raw.length,
-        total: Number.isFinite(pagination?.total) ? Number(pagination?.total) : null,
-        hasMore: typeof pagination?.hasMore === 'boolean' ? pagination.hasMore : null,
-      });
-
-      for (const value of raw) {
-        if (!value || typeof value !== 'object') continue;
-        const fixture = value as Record<string, unknown>;
-        const idValue = fixture.id ?? fixture.fixture_id ?? fixture.fixtureId;
-        if (idValue === null || idValue === undefined || idValue === '') continue;
-        const id = String(idValue);
-        if (seen.has(id)) continue;
-        seen.add(id);
-        fixtures.push(fixture);
-      }
-
-      const hasMore = typeof pagination?.hasMore === 'boolean'
-        ? pagination.hasMore
-        : raw.length === PAGE_LIMIT;
-      if (!hasMore) break;
-
-      const serverOffset = Number.isFinite(pagination?.offset) ? Number(pagination?.offset) : offset;
-      const serverLimit = Number.isFinite(pagination?.limit) && Number(pagination?.limit) > 0
-        ? Number(pagination?.limit)
-        : PAGE_LIMIT;
-      const nextOffset = serverOffset + serverLimit;
-      if (nextOffset <= offset) throw new Error(`GOAL API pagination did not advance (status=${status}, offset=${offset})`);
-      offset = nextOffset;
     }
   }
 
-  return { fixtures, apiCalls, pages };
+  if (!fixtures.length && errors.length) {
+    throw new Error(`GOAL APIライブ取得失敗: ${errors.map((error) => `${error.status}@${error.offset} ${error.reason}`).join(' / ')}`);
+  }
+  return { fixtures, apiCalls, pages, errors };
 }

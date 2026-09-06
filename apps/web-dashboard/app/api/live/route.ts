@@ -30,7 +30,7 @@ export async function GET() {
     });
     console.info(`GOAL API /fixtures called ${result.apiCalls} time(s) to assemble ${fixtures.length} unique LIVE/HALF_TIME fixtures`);
     return Response.json(
-      { fixtures, apiRequests: result.apiCalls, pages: result.pages },
+      { fixtures, apiRequests: result.apiCalls, pages: result.pages, warnings: result.errors },
       { headers: { 'X-GoalApi-Calls': String(result.apiCalls) } },
     );
   } catch (error) {
