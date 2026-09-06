@@ -178,7 +178,8 @@ function UpcomingBoard({ fixtures, loading, onRest }: { fixtures: UpcomingFixtur
       setCandidates(data.candidates ?? []);
       setFormRunId(data.runId ?? '');
       setOddsMessage('');
-      setAnalysisMessage(`${data.checkedTeams}チームを${data.apiRequests} RESTで確認。4勝以上または3勝＋1分以上は${data.candidates.length}チーム${data.failedTeams ? `（取得失敗 ${data.failedTeams}）` : ''}。${data.saved ? '分析結果を履歴保存しました。' : '結果の保存だけ失敗しました。'}`);
+      const outcomes = Object.entries(data.outcomeCounts ?? {}).map(([name, count]) => `${name} ${count}`).join(' / ');
+      setAnalysisMessage(`${data.checkedTeams}チームを${data.apiRequests} RESTで確認（retry ${data.retryCount ?? 0}）。4勝以上または3勝＋1分以上は${data.candidates.length}チーム${data.failedTeams ? `（取得失敗 ${data.failedTeams}）` : ''}。${outcomes ? `内訳: ${outcomes}。` : ''}${data.saved ? '分析結果を履歴保存しました。' : '結果の保存だけ失敗しました。'}`);
     } catch (error) { setAnalysisMessage(error instanceof Error ? error.message : '分析エラー'); }
     finally { setAnalyzing(false); }
   }

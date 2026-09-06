@@ -1,10 +1,10 @@
 import { env } from 'cloudflare:workers';
 import { monitorSchema } from '@/db/schema';
+import { fetchTeamResults, TEAM_RESULTS_CONCURRENCY } from '@/lib/team-results-client';
 
 export const dynamic = 'force-dynamic';
 
-const API_BASE = 'https://api.goal-api.com/v1';
-const BATCH_SIZE = 5;
+const BATCH_SIZE = TEAM_RESULTS_CONCURRENCY;
 
 type InputFixture = {
   id: string; league: string; country: string; home: string; away: string;
@@ -65,20 +65,34 @@ export async function POST(request: Request) {
   for (let index = 0; index < tasks.length; index += BATCH_SIZE) {
     const batch = tasks.slice(index, index + BATCH_SIZE);
     const rows = await Promise.all(batch.map(async (task) => {
-      apiRequests += 1;
+      const fetched = await fetchTeamResults({ apiKey, teamId: task.teamId });
+      apiRequests += fetched.attempts;
+      if (fetched.category !== 'success') {
+        return {
+          ...task, status: fetched.category, failureCategory: fetched.failureCategory,
+          error: fetched.finalError ?? fetched.category, results: [], wins: null, draws: null, played: 0,
+          attempts: fetched.attempts, finalHttpStatus: fetched.finalHttpStatus,
+          requestStartedAt: fetched.requestStartedAt, requestCompletedAt: fetched.requestCompletedAt,
+          dataCount: fetched.dataCount, attemptLog: fetched.attemptLog,
+        };
+      }
       try {
-        const response = await fetch(`${API_BASE}/teams/${encodeURIComponent(task.teamId)}/results?limit=5&offset=0`, {
-          headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' }, cache: 'no-store',
-        });
-        const payload = await response.json();
-        if (!response.ok) return { ...task, error: `HTTP ${response.status}`, results: [], wins: null };
-        const matches = Array.isArray(payload?.data) ? payload.data : [];
-        const results = matches.map((match: Record<string, any>) => resultForTeam(match, task.teamId)).filter(Boolean).slice(0, 5);
+        const results = fetched.data.map((match: Record<string, any>) => resultForTeam(match, task.teamId)).filter(Boolean).slice(0, 5);
         const wins = results.filter((item: any) => item.result === 'W').length;
         const draws = results.filter((item: any) => item.result === 'D').length;
-        return { ...task, results, wins, draws, played: results.length, source: payload?.source ?? null };
+        return {
+          ...task, status: 'success', results, wins, draws, played: results.length, source: fetched.source,
+          attempts: fetched.attempts, finalHttpStatus: fetched.finalHttpStatus,
+          requestStartedAt: fetched.requestStartedAt, requestCompletedAt: fetched.requestCompletedAt,
+          dataCount: fetched.dataCount, attemptLog: fetched.attemptLog,
+        };
       } catch (error) {
-        return { ...task, error: error instanceof Error ? error.message : '取得エラー', results: [], wins: null };
+        return {
+          ...task, status: 'parse_error', error: error instanceof Error ? error.message : '解析エラー',
+          results: [], wins: null, draws: null, played: 0, attempts: fetched.attempts,
+          finalHttpStatus: fetched.finalHttpStatus, requestStartedAt: fetched.requestStartedAt,
+          requestCompletedAt: fetched.requestCompletedAt, dataCount: fetched.dataCount, attemptLog: fetched.attemptLog,
+        };
       }
     }));
     checked.push(...rows);
@@ -98,11 +112,17 @@ export async function POST(request: Request) {
     draws: team.draws,
   }));
 
-  const failedTeams = checked.filter((team) => team.error).length;
+  const failedTeams = checked.filter((team) => team.status !== 'success').length;
+  const retryCount = checked.reduce((sum, team) => sum + Math.max(0, Number(team.attempts ?? 1) - 1), 0);
+  const outcomeCounts = checked.reduce((counts, team) => {
+    const status = String(team.status ?? 'parse_error');
+    counts[status] = (counts[status] ?? 0) + 1;
+    return counts;
+  }, {} as Record<string, number>);
   const createdAt = new Date().toISOString();
   const runId = `${createdAt}-${crypto.randomUUID()}`;
   let saved = true;
   try { await saveAnalysis({ runId, createdAt, checkedTeams: checked.length, failedTeams, apiRequests, candidates, checked }); }
   catch (error) { saved = false; console.error('form analysis save failed', error); }
-  return Response.json({ candidates, checkedTeams: checked.length, failedTeams, apiRequests, runId, saved });
+  return Response.json({ candidates, checkedTeams: checked.length, failedTeams, apiRequests, retryCount, outcomeCounts, runId, saved });
 }
