@@ -14,6 +14,7 @@ type ManualSnapshot = { id: string; status: string; capturedAt: string; stats: S
 type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; lastReceivedAt?: string; updates: number; ended?: boolean; htStats?: Stat[] | null; sixtyStats?: Stat[] | null; sixtyMinute?: number | null; subscriptionState?: string; subscribedAt?: string | null; snapshots: ManualSnapshot[]; selectedSnapshotId?: string };
 type MonitorEvent = { sessionId: string; fixtureId: string; eventType: string; receivedAt: string; status?: string; home?: string; away?: string; homeScore?: string; awayScore?: string; payload: unknown };
 type Bookmark = { fixtureId:string;home:string;away:string;league:string;country:string;kickoffUtc:string;reason:string;relatedTeamName?:string|null;status:'waiting'|'monitoring'|'finished'|'removed';updatedAt:string };
+type MonitorExclusion = { fixtureId:string;home:string;away:string;reason:string;excludedAt:string;updatedAt:string };
 
 export default function Home() {
   const [viewMode, setViewMode] = useState<'live' | 'upcoming'>('live');
@@ -31,21 +32,25 @@ export default function Home() {
   const [frameCount, setFrameCount] = useState(0);
   const [collectorRequests, setCollectorRequests] = useState(0);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
+  const [monitorExclusions, setMonitorExclusions] = useState<MonitorExclusion[]>([]);
   const [bookmarkMessage, setBookmarkMessage] = useState('');
   const sessionIdRef = useRef('');
   const matchesRef = useRef<Record<string, LiveMatch>>({});
   const hiddenFixtureIdsRef = useRef(new Set<string>());
+  const excludedFixtureIdsRef = useRef(new Set<string>());
   const visible = useMemo(() => fixtures.filter((f) => `${f.home} ${f.away} ${f.league} ${f.country}`.toLowerCase().includes(query.toLowerCase())), [fixtures, query]);
-  const additionalIds = selected.filter((id) => !matches[id]);
+  const additionalIds = selected.filter((id) => !matches[id] && !monitorExclusions.some((row) => row.fixtureId === id));
   const availableSlots = Math.max(0, 25 - Object.keys(matches).length);
   const addableIds = additionalIds.slice(0, availableSlots);
 
   async function loadBookmarks() { try { const response=await fetch('/api/bookmarks',{cache:'no-store'}); if(response.ok)setBookmarks((await response.json()).bookmarks??[]); } catch {} }
+  async function loadMonitorExclusions() { try { const response=await fetch('/api/monitor-exclusions',{cache:'no-store'}); if(response.ok){const rows=(await response.json()).exclusions??[];excludedFixtureIdsRef.current=new Set(rows.map((row:MonitorExclusion)=>String(row.fixtureId)));setMonitorExclusions(rows);} } catch {} }
   async function bookmarkFixture(fixture: { id:string;home:string;away:string;league:string;country:string;kickoffUtc?:string }, reason='manual', relatedTeamId?:string, relatedTeamName?:string) {
     try { const response=await fetch('/api/bookmarks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fixtureId:fixture.id,home:fixture.home,away:fixture.away,league:fixture.league,country:fixture.country,kickoffUtc:fixture.kickoffUtc??new Date().toISOString(),reason,relatedTeamId,relatedTeamName})}); const data=await response.json(); if(!response.ok)throw new Error(data.error);setBookmarkMessage(`${fixture.home} vs ${fixture.away}をBookmarkしました`);await loadBookmarks(); }
     catch(error){setBookmarkMessage(error instanceof Error?error.message:'Bookmark失敗')}
   }
   async function removeBookmark(fixtureId:string){await fetch(`/api/bookmarks?fixtureId=${encodeURIComponent(fixtureId)}`,{method:'DELETE'});await loadBookmarks()}
+  async function restoreMonitoring(fixtureId:string){const response=await fetch(`/api/monitor-exclusions?fixtureId=${encodeURIComponent(fixtureId)}`,{method:'DELETE'});if(response.ok){excludedFixtureIdsRef.current.delete(fixtureId);hiddenFixtureIdsRef.current.delete(fixtureId);await loadMonitorExclusions();setMessage('監視除外を解除しました。Bookmark済みならschedulerが再び監視へ追加します。');}}
 
   async function loadFixtures() {
     setLoading(true); setMessage('GOAL APIからライブ試合を取得中…');
@@ -83,8 +88,8 @@ export default function Home() {
   async function startMonitoring() {
     if (!selected.length) return;
     setConnection('connecting'); setMessage('Collectorへ監視開始を依頼中…');
-    hiddenFixtureIdsRef.current.clear();
-    const initialMatches = Object.fromEntries(selected.map((id) => { const f = fixtures.find((x) => x.id === id)!; return [id, { ...f, stats: [], updates: 0, snapshots: [] }]; }));
+    const monitorable = selected.filter((id) => !excludedFixtureIdsRef.current.has(id));
+    const initialMatches = Object.fromEntries(monitorable.map((id) => { const f = fixtures.find((x) => x.id === id)!; return [id, { ...f, stats: [], updates: 0, snapshots: [] }]; }));
     setMatches(initialMatches);
     try {
       const response = await fetch('/api/collector', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'start', fixtures: Object.values(initialMatches) }) });
@@ -114,17 +119,26 @@ export default function Home() {
 
   async function removeFromMonitoring(id: string) {
     try {
+      const match = matchesRef.current[id];
+      const exclusion = await fetch('/api/monitor-exclusions', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({fixtureId:id,home:match?.home??'',away:match?.away??'',reason:'manual_fixture_unsubscribe'}) });
+      if (!exclusion.ok) throw new Error((await exclusion.json().catch(()=>({}))).error || '監視除外の保存に失敗しました');
+      excludedFixtureIdsRef.current.add(id);
+      await loadMonitorExclusions();
       const response = await fetch('/api/collector', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'remove', fixtureId: id, reason: 'manual_fixture_unsubscribe' }) });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || '個別解除に失敗しました');
       hiddenFixtureIdsRef.current.add(id);
       setMatches((now) => withoutFixture(now, id));
       setSelected((now) => now.filter((fixtureId) => fixtureId !== id));
-      setMessage('対象試合だけ監視から外しました。過去データは保持されています。');
+      setMessage('対象試合を永続的な監視除外リストへ移しました。Bookmarkと過去データは保持されています。');
     } catch (error) { setMessage(error instanceof Error ? error.message : '個別解除に失敗しました'); }
   }
 
-  function hideFinishedFixture(id: string) {
+  async function hideFinishedFixture(id: string) {
+    const match = matchesRef.current[id];
+    const response = await fetch('/api/monitor-exclusions', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({fixtureId:id,home:match?.home??'',away:match?.away??'',reason:'finished_fixture_hidden'}) });
+    if (!response.ok) { setMessage('終了試合の監視除外保存に失敗しました。'); return; }
+    excludedFixtureIdsRef.current.add(id); await loadMonitorExclusions();
     hiddenFixtureIdsRef.current.add(id);
     setMatches((now) => withoutFixture(now, id));
     setSelected((now) => now.filter((fixtureId) => fixtureId !== id));
@@ -157,7 +171,7 @@ export default function Home() {
     });
   }
   useEffect(() => { matchesRef.current = matches; }, [matches]);
-  useEffect(() => { void loadBookmarks(); const timer=window.setInterval(loadBookmarks,5000); return()=>window.clearInterval(timer); }, []);
+  useEffect(() => { void loadBookmarks(); void loadMonitorExclusions(); const timer=window.setInterval(()=>{void loadBookmarks();void loadMonitorExclusions();},5000); return()=>window.clearInterval(timer); }, []);
   useEffect(() => {
     let cancelled = false;
     const sync = async () => {
@@ -166,7 +180,7 @@ export default function Home() {
         const data = await response.json(); if (cancelled) return;
         sessionIdRef.current = data.sessionId ?? ''; setCollectorRequests(Number(data.goalApiRequests ?? 0));
         setFrameCount((data.fixtures ?? []).reduce((sum: number, fixture: LiveMatch) => sum + Number(fixture.updates ?? 0), 0));
-        if (data.fixtures?.length) setMatches((current) => Object.fromEntries(visibleCollectorFixtures(data.fixtures as LiveMatch[], hiddenFixtureIdsRef.current).map((fixture) => [fixture.id, { ...fixture, updatedAt: fixture.updatedAt ? new Date(fixture.updatedAt).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' }) : undefined, snapshots: current[fixture.id]?.snapshots ?? [], selectedSnapshotId: current[fixture.id]?.selectedSnapshotId }])));
+        if (data.fixtures?.length) { const hidden=new Set([...hiddenFixtureIdsRef.current,...excludedFixtureIdsRef.current]); setMatches((current) => Object.fromEntries(visibleCollectorFixtures(data.fixtures as LiveMatch[], hidden).map((fixture) => [fixture.id, { ...fixture, updatedAt: fixture.updatedAt ? new Date(fixture.updatedAt).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' }) : undefined, snapshots: current[fixture.id]?.snapshots ?? [], selectedSnapshotId: current[fixture.id]?.selectedSnapshotId }]))); }
         if (data.active && data.connectionState === 'live') { setConnection('live'); setMessage(`${data.fixtures.length}試合を独立Collectorで監視中。ブラウザを再読込しても収集は継続します。`); }
         else if (data.active) { setConnection('connecting'); setMessage(data.connectionState === 'reconnect_wait' ? `Socket切断を検知。再接続待機中（試行 ${data.reconnectAttempt}）` : 'CollectorがWebSocketへ接続中…'); }
         else setConnection((value) => value === 'error' ? value : 'idle');
@@ -185,7 +199,7 @@ export default function Home() {
       <div className="quota"><span>HTTP USED</span><strong>{restCount + collectorRequests}</strong><small>WS updates {frameCount}</small></div>
     </header>
     <nav className="view-tabs" aria-label="表示切替"><button className={viewMode === 'live' ? 'active' : ''} onClick={() => setViewMode('live')}>ライブ監視</button><button className={viewMode === 'upcoming' ? 'active' : ''} onClick={() => setViewMode('upcoming')}>今後24時間</button></nav>
-    <BookmarkPanel bookmarks={bookmarks} matches={matches} message={bookmarkMessage} onRemove={removeBookmark} />
+    <BookmarkPanel bookmarks={bookmarks} exclusions={monitorExclusions} matches={matches} message={bookmarkMessage} onRemove={removeBookmark} onRestoreMonitoring={restoreMonitoring} />
     <section className="commandbar"><div><h1>{viewMode === 'live' ? 'ライブ試合を選んで、リアルタイムで見る。' : 'これから24時間以内に始まる全試合。'}</h1><p>{viewMode === 'live' ? message : upcomingMessage}</p></div><div className="actions">
       {viewMode === 'live' ? <><button className="secondary" onClick={loadFixtures} disabled={loading}>{loading ? '取得中…' : fixtures.length ? '一覧を更新' : 'ライブ試合を取得'}</button>
       {connection === 'live' ? <><button className="primary" onClick={addSelectedMatches} disabled={!addableIds.length || !availableSlots}>選択から{addableIds.length}試合を追加</button><button className="danger" onClick={stopMonitoring}>監視を停止</button></> : connection === 'connecting' ? <button className="danger" onClick={stopMonitoring}>接続を中止</button> : <button className="primary" onClick={startMonitoring} disabled={!selected.length}>選択した{selected.length}試合を監視</button>}</> : <button className="primary" onClick={loadUpcomingFixtures} disabled={upcomingLoading}>{upcomingLoading ? '取得中…' : upcomingFixtures.length ? '24時間一覧を更新' : '今後24時間を取得'}</button>}
@@ -198,7 +212,7 @@ export default function Home() {
         </div>
       </aside>
       <section className="score-stage">{!Object.keys(matches).length && <div className="hero-empty"><div className="pulse-rings"><span /><span /><b>⚽</b></div><h2>試合を選択してください</h2><p>左のライブ一覧から最大25試合を選び、1本のSocketで同時監視できます。</p><div className="flow"><span>LIVE LIST<small>通常2 REST</small></span><i>→</i><span>SELECT<small>最大25試合</small></span><i>→</i><span>WEBSOCKET<small>更新消費 0</small></span></div></div>}
-        <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} onCapture={() => captureSnapshot(m.id)} onSelectSnapshot={(snapshotId) => selectSnapshot(m.id, snapshotId)} onRemove={() => m.ended ? hideFinishedFixture(m.id) : void removeFromMonitoring(m.id)} onRefresh={() => void refreshSubscription(m.id)} />)}</div>
+        <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} onCapture={() => captureSnapshot(m.id)} onSelectSnapshot={(snapshotId) => selectSnapshot(m.id, snapshotId)} onRemove={() => m.ended ? void hideFinishedFixture(m.id) : void removeFromMonitoring(m.id)} onRefresh={() => void refreshSubscription(m.id)} />)}</div>
       </section>
     </div> : <UpcomingBoard fixtures={upcomingFixtures} loading={upcomingLoading} onRest={(count) => setRestCount((value) => value + count)} bookmarks={bookmarks} onBookmark={bookmarkFixture} />}
   </main>;
@@ -262,8 +276,9 @@ function UpcomingBoard({ fixtures, loading, onRest, bookmarks, onBookmark }: { f
   </section>;
 }
 
-function BookmarkPanel({bookmarks,matches,message,onRemove}:{bookmarks:Bookmark[];matches:Record<string,LiveMatch>;message:string;onRemove:(id:string)=>Promise<void>}) {
-  return <section className="bookmark-panel"><div className="bookmark-heading"><div><span>BOOKMARKS</span><strong>{bookmarks.length}</strong></div><small>{message||'kickoff 3分前から自動Socket監視'}</small></div><div className="bookmark-list">{bookmarks.length?bookmarks.map(b=><article key={b.fixtureId}><div><b>{b.home} vs {b.away}</b><small>{b.country} · {b.league}</small></div><time>{new Date(b.kickoffUtc).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'})}</time><span className={`bookmark-status ${b.status}`}>{matches[b.fixtureId]?.subscriptionState??b.status}</span>{b.relatedTeamName&&<em>好調: {b.relatedTeamName}</em>}<button onClick={()=>void onRemove(b.fixtureId)}>一覧から外す</button></article>):<p>Bookmarkはまだありません</p>}</div></section>;
+function BookmarkPanel({bookmarks,exclusions,matches,message,onRemove,onRestoreMonitoring}:{bookmarks:Bookmark[];exclusions:MonitorExclusion[];matches:Record<string,LiveMatch>;message:string;onRemove:(id:string)=>Promise<void>;onRestoreMonitoring:(id:string)=>Promise<void>}) {
+  const excludedIds=new Set(exclusions.map(row=>row.fixtureId));
+  return <section className="bookmark-panel"><div className="bookmark-heading"><div><span>BOOKMARKS</span><strong>{bookmarks.length}</strong></div><small>{message||'kickoff 3分前から自動Socket監視'}</small></div><div className="bookmark-list">{bookmarks.length?bookmarks.map(b=><article key={b.fixtureId}><div><b>{b.home} vs {b.away}</b><small>{b.country} · {b.league}</small></div><time>{new Date(b.kickoffUtc).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'})}</time><span className={`bookmark-status ${excludedIds.has(b.fixtureId)?'excluded':b.status}`}>{excludedIds.has(b.fixtureId)?'監視除外中':matches[b.fixtureId]?.subscriptionState??b.status}</span>{b.relatedTeamName&&<em>好調: {b.relatedTeamName}</em>}{excludedIds.has(b.fixtureId)&&<button onClick={()=>void onRestoreMonitoring(b.fixtureId)}>監視に戻す</button>}<button onClick={()=>void onRemove(b.fixtureId)}>Bookmarkを外す</button></article>):<p>Bookmarkはまだありません</p>}</div>{exclusions.length>0&&<div className="monitor-exclusion-list"><span>監視除外リスト（Mac復帰・再読込後も維持）</span>{exclusions.map(row=><button key={row.fixtureId} onClick={()=>void onRestoreMonitoring(row.fixtureId)}>{row.home||row.fixtureId} {row.away?`vs ${row.away}`:''} · 監視に戻す</button>)}</div>}</section>;
 }
 
 function isSelectedLeague(fixture: UpcomingFixture) {
