@@ -15,6 +15,8 @@ Web画面上部のタブで、次の2画面を切り替えられます。
 - `ライブ監視`: ライブfixtureを選択してWebSocket監視
 - `今後24時間`: 現在時刻から24時間以内に始まる全fixtureをJST順で表示
 
+ライブ一覧、24時間一覧、好調候補から試合をBookmarkできます。BookmarkはD1へ保存され、kickoff約3分前になると起動中のCollectorが同じ1本のWebSocketへ自動追加します。25枠を超えた試合はkickoff順の待機列に残り、daemon再起動後もwaiting/monitoring状態から復元されます。Bookmarkを一覧から外しても、それまでのraw JSONL・D1イベント・timelineは削除されません。
+
 ライブ監視では、各試合の「現在値をスナップ」から任意時点のstatisticsを保存し、その時点から現在までの増減を比較できます。WebSocketの生更新、手動スナップ、score/status、監視開始・追加・終了はローカルD1へ永続保存されます。保存処理とスナップ比較によるGOAL API REST消費は0です。
 
 WebSocket収集は `services/collector/` のローカルCollectorが担当します。画面を再読み込みしてもCollectorは止まらず、異常切断時だけ自動で再接続・再認証・再subscribeします。「監視を停止」を押した場合は再接続しません。通常時の定期REST statistics pollingは行いません。

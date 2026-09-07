@@ -26,6 +26,7 @@ export async function GET() {
         homeScore: stringValue(f.homeTeamScore ?? f.match_hometeam_score, '-'),
         awayScore: stringValue(f.awayTeamScore ?? f.match_awayteam_score, '-'),
         status: stringValue(f.matchStatus ?? f.match_status ?? f.status, 'LIVE'),
+        kickoffUtc: stringValue(f.kickoffUtc ?? f.kickoff_utc, new Date().toISOString()),
       };
     });
     console.info(`GOAL API /fixtures called ${result.apiCalls} time(s) to assemble ${fixtures.length} unique LIVE/HALF_TIME fixtures`);

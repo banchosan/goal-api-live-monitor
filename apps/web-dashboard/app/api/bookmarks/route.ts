@@ -43,8 +43,8 @@ export async function PATCH(request: Request) {
   const result = await database.prepare(`UPDATE fixture_bookmarks SET status=?, updated_at=?,
     monitoring_started_at=CASE WHEN ?='monitoring' THEN COALESCE(monitoring_started_at,?) ELSE monitoring_started_at END,
     finished_at=CASE WHEN ?='finished' THEN COALESCE(finished_at,?) ELSE finished_at END,
-    removed_at=CASE WHEN ?='removed' THEN ? WHEN ?!='removed' THEN NULL ELSE removed_at END WHERE fixture_id=?`)
-    .bind(status,now,status,now,status,now,status,now,status,fixtureId).run();
+    removed_at=CASE WHEN ?='removed' THEN ? WHEN ?!='removed' THEN NULL ELSE removed_at END WHERE fixture_id=? AND (status!='removed' OR ?='removed')`)
+    .bind(status,now,status,now,status,now,status,now,status,fixtureId,status).run();
   return result.meta.changes ? Response.json({ updated: true, fixtureId, status }) : Response.json({ error: 'Bookmarkが見つかりません' }, { status: 404 });
 }
 

@@ -34,7 +34,8 @@ export class GoalApiCollector {
 
   async add(fixtures) {
     if (!this.desired || !this.sessionId) throw new Error('監視セッションが開始されていません');
-    const additions = normalizeFixtures(fixtures).filter((fixture) => !this.fixtures.has(fixture.id)).slice(0, 25 - this.fixtures.size);
+    const activeCount = [...this.fixtures.values()].filter((fixture) => !fixture.ended).length;
+    const additions = normalizeFixtures(fixtures).filter((fixture) => !this.fixtures.has(fixture.id) || this.fixtures.get(fixture.id)?.ended).slice(0, Math.max(0, 25 - activeCount));
     for (const fixture of additions) {
       const state = initialState(fixture); this.fixtures.set(fixture.id, state);
       await this.emit('session_add', state, { addedAt: this.now() }, { source: 'system' });
@@ -46,7 +47,8 @@ export class GoalApiCollector {
   async remove(fixtureId, reason = 'manual_fixture_unsubscribe') {
     const fixture = this.fixtures.get(String(fixtureId));
     if (!fixture) throw new Error('監視対象fixtureが見つかりません');
-    if (this.fixtures.size === 1) return this.stop(reason);
+    const activeCount = [...this.fixtures.values()].filter((item) => !item.ended).length;
+    if (activeCount === 1 && !fixture.ended) { await this.stop(reason); this.fixtures.delete(fixture.id); return this.status(); }
     if (!fixture.ended && this.socket?.readyState === 1) {
       this.socket.send(JSON.stringify({ type: 'unsubscribe', resource: 'match', matchId: fixture.id }));
     }
@@ -191,7 +193,7 @@ export class GoalApiCollector {
 }
 
 function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, ended: false, htStats: null, sixtyStats: null, sixtyMinute: null, subscriptionState: 'not_subscribed', subscribeRequestedAt: null, subscribedAt: null, lastRefreshAt: null }; }
-function normalizeFixtures(fixtures) { return Array.isArray(fixtures) ? fixtures.filter((fixture) => fixture?.id).map((fixture) => ({ id: String(fixture.id), league: String(fixture.league ?? ''), country: String(fixture.country ?? ''), home: String(fixture.home ?? 'Home'), away: String(fixture.away ?? 'Away'), homeScore: String(fixture.homeScore ?? '-'), awayScore: String(fixture.awayScore ?? '-'), status: String(fixture.status ?? 'LIVE') })) : []; }
+function normalizeFixtures(fixtures) { return Array.isArray(fixtures) ? fixtures.filter((fixture) => fixture?.id).map((fixture) => ({ id: String(fixture.id), league: String(fixture.league ?? ''), country: String(fixture.country ?? ''), home: String(fixture.home ?? 'Home'), away: String(fixture.away ?? 'Away'), homeScore: String(fixture.homeScore ?? '-'), awayScore: String(fixture.awayScore ?? '-'), status: String(fixture.status ?? 'LIVE'), kickoffUtc: fixture.kickoffUtc ? String(fixture.kickoffUtc) : null, monitorSource: String(fixture.monitorSource ?? 'manual') })) : []; }
 
 export function mergeStatistics(previous, incoming) {
   const merged = structuredClone(Array.isArray(previous) ? previous : []);

@@ -123,6 +123,7 @@ export async function POST(request: Request) {
     league: team.fixture.league,
     country: team.fixture.country,
     fixtureId: team.fixture.id,
+    teamId: team.teamId,
     team: team.team,
     side: team.side,
     opponent: team.opponent,
