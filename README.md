@@ -59,6 +59,7 @@ goal-api-live-monitor/
 - `scripts/goal_api_live_statistics_test.py`: REST statistics検証
 - `scripts/goal_api_duplicate_statistics_test.py`: 重複statistics検証
 - `scripts/analyze_saved_goal_api_data.py`: 保存済みデータの棚卸し・分析（API request 0）
+- `scripts/analyze_goal_context.py`: raw Socket eventsからGoal直前の時系列・stat差分を再生成（API request 0）
 
 ## 保存データと分析
 
@@ -83,6 +84,29 @@ python3 scripts/analyze_saved_goal_api_data.py
 ```
 
 この分析はローカルファイルだけを読み、GOAL API requestを送りません。
+
+### Goal前後の時系列分析
+
+Collectorのimmutableな `events.jsonl` から、fixture/sessionごとの累積timelineと、監視中に初めて観測されたGoalの直前5分・10分のstatistics差分を再生成できます。raw JSONLは変更しません。
+
+```bash
+cd /Users/tsukasa/Desktop/goal-api-live-monitor
+python3 scripts/analyze_goal_context.py
+```
+
+出力は `data/goal_api_test/derived/goal_context/<UTC時刻>/` に保存されます。
+
+- `observations.jsonl`: partial updateを同一session内で復元した各観測値。重複statは `Corners#1` / `Corners#2` のように保持
+- `goal_contexts.jsonl`: Goal検出、score前後、scorer、Goal前5/10分の差分。`confirmed`（scoreとscorer一致）/ `score_only` / `goalscorer_only` / `historical` のconfidenceを保持。最初の観測時点ですでに存在したGoalは `historical_at_first_observation` として学習ラベルから区別
+- `summary.json`: fixture数、観測数、Goal数、実在したstat type、window定義
+
+任意のfixtureだけを再解析する場合：
+
+```bash
+python3 scripts/analyze_goal_context.py --fixture-id <fixture_id> --windows 5,10
+```
+
+再接続・切断のlifecycleも読んでおり、window内に観測gapがある場合は `connectionGap: true`、`complete: false` として学習対象から分けられます。
 
 ## 確認済み仕様
 
