@@ -1,16 +1,7 @@
-export const MAX_FIXTURE_IDS_PER_REQUEST = 20;
-
 type UnknownRecord = Record<string, unknown>;
 
 function record(value: unknown): UnknownRecord {
   return value !== null && typeof value === 'object' ? value as UnknownRecord : {};
-}
-
-export function chunkFixtureIds(ids: Iterable<string | number>): string[][] {
-  const unique = [...new Set([...ids].map(String).filter(Boolean))];
-  const chunks: string[][] = [];
-  for (let index = 0; index < unique.length; index += MAX_FIXTURE_IDS_PER_REQUEST) chunks.push(unique.slice(index, index + MAX_FIXTURE_IDS_PER_REQUEST));
-  return chunks;
 }
 
 export function fixtureDetails(response: unknown): UnknownRecord[] {
@@ -22,6 +13,7 @@ export function resultFixtureRecords(raw: unknown): UnknownRecord[] {
   if (Array.isArray(raw)) return raw.flatMap((batch) => fixtureDetails(record(batch).response));
   const snapshot = record(raw);
   if (Array.isArray(snapshot.batches)) return snapshot.batches.flatMap((batch) => fixtureDetails(record(batch).response));
+  if (Array.isArray(snapshot.responses)) return snapshot.responses.flatMap((batch) => fixtureDetails(record(batch).response));
   return fixtureDetails(snapshot.response);
 }
 

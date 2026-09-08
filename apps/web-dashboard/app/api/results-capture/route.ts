@@ -1,11 +1,17 @@
 import { env } from 'cloudflare:workers';
 import { monitorSchema } from '@/db/schema';
-import { chunkFixtureIds, fixtureDetails, resultFixtureRecords } from '@/lib/result-capture';
+import { fixtureDetails, resultFixtureRecords } from '@/lib/result-capture';
 
 export const dynamic = 'force-dynamic';
 const BASE = 'https://v3.football.api-sports.io';
 
-type SnapshotRow = { api_fixture_id: string | number };
+type SnapshotRow = { api_fixture_id: string | number; kickoff: string };
+
+function jstDate(value: string) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date(value));
+}
 
 async function parseJsonResponse(response: Response) {
   const text = await response.text();
@@ -25,14 +31,16 @@ export async function POST(request: Request) {
 
   const db = (env as unknown as { DB: D1Database }).DB;
   await db.batch(monitorSchema.map((sql) => db.prepare(sql)));
-  const snapshots = await db.prepare('SELECT api_fixture_id FROM odds_snapshots WHERE run_id=?').bind(body.runId).all<SnapshotRow>();
-  const batches = chunkFixtureIds((snapshots.results ?? []).map((snapshot) => snapshot.api_fixture_id));
-  const responses: Array<{ fixtureIds: string[]; response: Record<string, unknown>[] }> = [];
+  const snapshots = await db.prepare('SELECT api_fixture_id,kickoff FROM odds_snapshots WHERE run_id=?').bind(body.runId).all<SnapshotRow>();
+  const fixtureIds = new Set((snapshots.results ?? []).map((snapshot) => String(snapshot.api_fixture_id)));
+  const dates = [...new Set((snapshots.results ?? []).map((snapshot) => jstDate(snapshot.kickoff)))];
+  const responses: Array<{ date: string; response: Record<string, unknown>[] }> = [];
   let apiRequests = 0;
 
-  for (const fixtureIds of batches) {
-    // API-Football documents this endpoint as returning fixture result, events and statistics for up to 20 IDs.
-    const response = await fetch(`${BASE}/fixtures?${new URLSearchParams({ ids: fixtureIds.join('-') })}`, {
+  for (const date of dates) {
+    // The current API-Football Free plan rejects the otherwise-documented `ids` parameter.
+    // Fetch a single JST day and retain only the fixture IDs saved with this odds run.
+    const response = await fetch(`${BASE}/fixtures?${new URLSearchParams({ date, timezone: 'Asia/Tokyo' })}`, {
       headers: { 'x-apisports-key': key },
       cache: 'no-store',
     });
@@ -40,11 +48,11 @@ export async function POST(request: Request) {
     const payload = await parseJsonResponse(response);
     if (!response.ok) return Response.json({ error: `API-Football HTTP ${response.status}`, apiRequests }, { status: response.status });
     if (!payload) return Response.json({ error: 'API-FootballからJSON以外の応答を受信しました', apiRequests }, { status: 502 });
-    responses.push({ fixtureIds, response: fixtureDetails(payload.response) });
+    responses.push({ date, response: fixtureDetails(payload.response).filter((fixture) => fixtureIds.has(String((fixture.fixture as Record<string, unknown> | undefined)?.id)))});
   }
 
   const createdAt = new Date().toISOString();
-  const rawSnapshot = { format: 'api-football-fixtures-ids-v1', batches: responses };
+  const rawSnapshot = { format: 'api-football-fixtures-date-v1', responses };
   const fixtures = resultFixtureRecords(rawSnapshot);
   const statisticsAvailable = fixtures.filter((fixture) => Array.isArray(fixture.statistics)).length;
   await db.prepare('INSERT INTO result_snapshots (odds_run_id,created_at,api_requests,raw_json) VALUES (?,?,?,?)')
