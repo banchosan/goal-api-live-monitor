@@ -66,7 +66,8 @@ export async function POST(request: Request) {
 }
 
 function coreTeamId(name: string) {
-  return `goal-api:team:${name.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+  // Preserve non-Latin names; ASCII-only slugging would collapse distinct teams.
+  return `goal-api:team:${encodeURIComponent(name.normalize('NFKC').trim().toLowerCase())}`;
 }
 
 async function persistLiveFacts(db: D1Database, events: StoredEvent[]) {
