@@ -321,7 +321,14 @@ function isSelectedLeague(fixture: UpcomingFixture) {
     norway: ['1st division', '1. division', 'division 1', 'obos-ligaen', 'obos ligaen'],
     sweden: ['superettan'],
   };
-  return (exact[country] ?? []).includes(league);
+  // UEFA competitions can be returned as Europe/World depending on the
+  // provider feed, so they are intentionally league-name based.
+  const uefaCompetitions = [
+    'uefa champions league', 'champions league',
+    'uefa europa league', 'europa league',
+    'uefa europa conference league', 'europa conference league', 'conference league',
+  ];
+  return (exact[country] ?? []).includes(league) || uefaCompetitions.includes(league);
 }
 
 function normalize(value: string) { return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase(); }
