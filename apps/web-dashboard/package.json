@@ -10,7 +10,11 @@
     "build": "vinext build",
     "start": "vinext start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "test": "node --experimental-strip-types --test tests/*.test.mjs"
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "db:local:test": "python3 ../../scripts/local_d1_foundation.py test",
+    "db:local:fingerprint": "python3 ../../scripts/local_d1_foundation.py fingerprint .wrangler/state/v3/d1/miniflare-D1DatabaseObject/faaf2b0445ab934c3aac48ddf0cdfade8f9bac050be98993748742cdd2cb05fb.sqlite",
+    "db:local:verify": "python3 ../../scripts/local_d1_foundation.py verify .wrangler/state/v3/d1/miniflare-D1DatabaseObject/faaf2b0445ab934c3aac48ddf0cdfade8f9bac050be98993748742cdd2cb05fb.sqlite",
+    "db:local:adopt": "python3 ../../scripts/local_d1_foundation.py adopt .wrangler/state/v3/d1/miniflare-D1DatabaseObject/faaf2b0445ab934c3aac48ddf0cdfade8f9bac050be98993748742cdd2cb05fb.sqlite"
   },
   "dependencies": {
     "next": "16.2.6",

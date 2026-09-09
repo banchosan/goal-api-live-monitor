@@ -1,4 +1,6 @@
-export const monitorSchema = [
+// Canonical expected local schema.  This is consumed by the local-only
+// migration/adoption tool; request handlers must not execute it as runtime DDL.
+export const canonicalSchema = [
   `CREATE TABLE IF NOT EXISTS monitor_fixture_exclusions (
     fixture_id TEXT PRIMARY KEY,
     home TEXT NOT NULL DEFAULT '',
@@ -265,3 +267,8 @@ export const monitorSchema = [
   )`,
   'CREATE INDEX IF NOT EXISTS live_signals_fixture_time_idx ON live_signals (fixture_id, triggered_at)',
 ] as const;
+
+// Compatibility export for older route modules.  Keeping it empty prevents a
+// page request from silently creating or altering a database.  Run
+// `npm run db:local:adopt` before starting the app on an existing local DB.
+export const monitorSchema: readonly string[] = [];
