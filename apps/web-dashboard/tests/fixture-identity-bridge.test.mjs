@@ -1,0 +1,3 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {matchFixturePair} from '../lib/fixture-identity-bridge.ts';
+const g={id:'g',kickoffUtc:'2026-01-01T12:00:00Z',league:'Premier League',country:'England',home:{id:'gh',name:'Alpha FC'},away:{id:'ga',name:'Beta FC'}};
+test('bridge requires multi-field fixture evidence',()=>{assert.equal(matchFixturePair(g,{...g,id:'a',home:{id:'ah',name:'Alpha FC'},away:{id:'aa',name:'Beta FC'}}).status,'SAFE_MATCH');assert.equal(matchFixturePair(g,{...g,id:'a',league:'Other',home:{id:'ah',name:'Alpha FC'},away:{id:'aa',name:'Beta FC'}}).status,'POSSIBLE_MATCH');assert.equal(matchFixturePair(g,{...g,id:'a',home:{id:'ah',name:'Alpha FC'},away:{id:'aa',name:'Else'}}).status,'NO_MATCH')});
