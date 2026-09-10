@@ -1,13 +1,13 @@
 import { readJsonResponse } from './safe-json-response.ts';
 
 export type ApiFootballFailure = {
-  stage: 'api-football-fixtures' | 'api-football-odds';
+  stage: 'api-football-fixtures' | 'api-football-odds' | 'candidate-odds';
   endpoint: string;
   status: number;
   contentType: string;
   bodyPreview: string;
   bodyEmpty: boolean;
-  kind: 'http_error' | 'invalid_json' | 'empty_body' | 'network_error';
+  kind: 'http_error' | 'invalid_json' | 'empty_body' | 'network_error' | 'validation_error' | 'internal_error';
   error: string;
 };
 
@@ -19,6 +19,11 @@ export class ApiFootballResponseError extends Error {
 export function apiFootballFailure(error: unknown, endpoint: string): ApiFootballFailure {
   if (error instanceof ApiFootballResponseError) return error.detail;
   return { stage: endpoint === '/odds' ? 'api-football-odds' : 'api-football-fixtures', endpoint, status: 0, contentType: '', bodyPreview: '<network error>', bodyEmpty: true, kind: 'network_error', error: error instanceof Error ? error.message : 'network error' };
+}
+
+/** For failures after the upstream response has already been handled (validation, D1, or application logic). */
+export function internalApiFootballFailure(error: unknown, endpoint = '/candidate-odds'): ApiFootballFailure {
+  return { stage: 'candidate-odds', endpoint, status: 0, contentType: '', bodyPreview: '<not an upstream response>', bodyEmpty: true, kind: 'internal_error', error: error instanceof Error ? error.message : 'internal route error' };
 }
 
 /** Parses only successful JSON API-Football responses, preserving safe diagnostics on every failure. */

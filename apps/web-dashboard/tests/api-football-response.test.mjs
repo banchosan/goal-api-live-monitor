@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ApiFootballResponseError, parseApiFootballResponse, publicApiFootballFailure } from '../lib/api-football-response.ts';
+import { ApiFootballResponseError, internalApiFootballFailure, parseApiFootballResponse, publicApiFootballFailure } from '../lib/api-football-response.ts';
 import { readJsonResponse, responseFailureMessage } from '../lib/safe-json-response.ts';
 
 async function failure(response, endpoint = '/odds') {
@@ -47,4 +47,10 @@ test('frontend-safe parser reports empty and non-JSON route responses without th
   const nonJson = await readJsonResponse(new Response('<html>bad gateway</html>', { status: 502, headers: { 'content-type': 'text/html' } }));
   assert.equal(nonJson.ok, false);
   if (!nonJson.ok) assert.match(responseFailureMessage(nonJson, 'route'), /status=502/);
+});
+
+test('an internal JavaScript exception is never labelled as a network error', () => {
+  const failure = internalApiFootballFailure(new TypeError("Cannot read properties of undefined (reading 'normalize')"));
+  assert.equal(failure.kind, 'internal_error');
+  assert.match(failure.error, /normalize/);
 });

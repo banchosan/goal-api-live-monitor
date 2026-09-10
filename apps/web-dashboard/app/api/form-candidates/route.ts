@@ -126,6 +126,12 @@ export async function POST(request: Request) {
     league: team.fixture.league,
     country: team.fixture.country,
     fixtureId: team.fixture.id,
+    // Candidate odds and the cross-provider bridge require the original fixture
+    // context. These are required identity fields, not display-only values.
+    home: team.fixture.home,
+    away: team.fixture.away,
+    homeTeamId: team.fixture.homeTeamId,
+    awayTeamId: team.fixture.awayTeamId,
     teamId: team.teamId,
     team: team.team,
     side: team.side,
