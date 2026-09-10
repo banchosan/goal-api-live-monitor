@@ -253,7 +253,8 @@ function UpcomingBoard({ fixtures, loading, onRest, bookmarks, onBookmark }: { f
       const response = await fetch('/api/candidate-odds', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ formRunId, candidates }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'オッズ取得に失敗しました');
-      setOddsMessage(`${data.matched}試合の全オッズを${data.apiRequests} API-Football RESTで取得・履歴保存しました。未一致 ${data.unmatched.length}試合。`);
+      const identity=data.identity;const identityMessage=identity?` fixture identity: 保存 ${identity.saved ?? 0} / 既存 ${identity.noop ?? 0} / 保留 ${identity.skipped ?? 0} / conflict ${identity.conflict ?? 0}。`:'';
+      setOddsMessage(`${data.matched}試合の全オッズを${data.apiRequests} API-Football RESTで取得・履歴保存しました。未一致 ${data.unmatched.length}試合。${identityMessage}`);
     } catch (error) { setOddsMessage(error instanceof Error ? error.message : 'オッズ取得エラー'); }
     finally { setOddsLoading(false); }
   }
