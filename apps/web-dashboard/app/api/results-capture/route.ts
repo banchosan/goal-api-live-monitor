@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { ensureRuntimeSchema } from '@/db/schema';
 import { fixtureDetails, resultFixtureRecords } from '@/lib/result-capture';
+import { saveTypedResults } from '@/lib/prematch-dual-write';
 
 export const dynamic = 'force-dynamic';
 const BASE = 'https://v3.football.api-sports.io';
@@ -58,7 +59,15 @@ export async function POST(request: Request) {
   await db.prepare('INSERT INTO result_snapshots (odds_run_id,created_at,api_requests,raw_json) VALUES (?,?,?,?)')
     .bind(body.runId, createdAt, apiRequests, JSON.stringify(rawSnapshot)).run();
 
-  return Response.json({ saved: true, runId: body.runId, createdAt, apiRequests, fixtures: fixtures.length, statisticsAvailable });
+  // The raw snapshot is retained even if typed identity or result conversion is unavailable.
+  let typed = { saved: 0, existing: 0, skipped: 0, error: 0, conflicts: 0 };
+  try {
+    typed = await saveTypedResults(db, { capturedAt: createdAt, fixtures });
+  } catch (error) {
+    typed.error = 1;
+    console.error('typed result dual-write failed; raw result snapshot remains saved', error);
+  }
+  return Response.json({ saved: true, runId: body.runId, createdAt, apiRequests, fixtures: fixtures.length, statisticsAvailable, typed });
 }
 
 export async function GET(request: Request) {

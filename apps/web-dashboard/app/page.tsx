@@ -241,7 +241,8 @@ function UpcomingBoard({ fixtures, loading, onRest, bookmarks, onBookmark }: { f
       setFormRunId(data.runId ?? '');
       setOddsMessage('');
       const outcomes = Object.entries(data.outcomeCounts ?? {}).map(([name, count]) => `${name} ${count}`).join(' / ');
-      setAnalysisMessage(`${data.checkedTeams}チームを${data.apiRequests} RESTで確認（retry ${data.retryCount ?? 0}）。最終候補は${data.candidates.length}チーム（直近2戦 LL / DL / LD により${data.excludedCount ?? 0}チーム除外）${data.failedTeams ? `（取得失敗 ${data.failedTeams}）` : ''}。${outcomes ? `内訳: ${outcomes}。` : ''}${data.saved ? '分析結果を履歴保存しました。' : '結果の保存だけ失敗しました。'}`);
+      const typed=data.typed;const typedMessage=typed?` typed form: 保存 ${typed.saved ?? 0} / 既存 ${typed.existing ?? 0} / 保留 ${typed.skipped ?? 0} / error ${typed.error ?? 0}。`:'';
+      setAnalysisMessage(`${data.checkedTeams}チームを${data.apiRequests} RESTで確認（retry ${data.retryCount ?? 0}）。最終候補は${data.candidates.length}チーム（直近2戦 LL / DL / LD により${data.excludedCount ?? 0}チーム除外）${data.failedTeams ? `（取得失敗 ${data.failedTeams}）` : ''}。${outcomes ? `内訳: ${outcomes}。` : ''}${data.saved ? '分析結果を履歴保存しました。' : '結果の保存だけ失敗しました。'}${typedMessage}`);
     } catch (error) { setAnalysisMessage(error instanceof Error ? error.message : '分析エラー'); }
     finally { setAnalyzing(false); }
   }
@@ -253,8 +254,8 @@ function UpcomingBoard({ fixtures, loading, onRest, bookmarks, onBookmark }: { f
       const response = await fetch('/api/candidate-odds', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ formRunId, candidates }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'オッズ取得に失敗しました');
-      const identity=data.identity;const identityMessage=identity?` fixture identity: 保存 ${identity.saved ?? 0} / 既存 ${identity.noop ?? 0} / 保留 ${identity.skipped ?? 0} / conflict ${identity.conflict ?? 0}。`:'';
-      setOddsMessage(`${data.matched}試合の全オッズを${data.apiRequests} API-Football RESTで取得・履歴保存しました。未一致 ${data.unmatched.length}試合。${identityMessage}`);
+      const identity=data.identity;const identityMessage=identity?` fixture identity: 保存 ${identity.saved ?? 0} / 既存 ${identity.noop ?? 0} / 保留 ${identity.skipped ?? 0} / conflict ${identity.conflict ?? 0}。`:'';const typed=data.typed;const typedMessage=typed?` typed odds: capture ${typed.captureRuns ?? 0} / markets ${typed.markets ?? typed.saved ?? 0} / 保留 ${identity?.skipped ?? 0} / malformed ${typed.malformed ?? 0} / error ${typed.error ?? 0}。`:'';
+      setOddsMessage(`${data.matched}試合の全オッズを${data.apiRequests} API-Football RESTで取得・履歴保存しました。未一致 ${data.unmatched.length}試合。${identityMessage}${typedMessage}`);
     } catch (error) { setOddsMessage(error instanceof Error ? error.message : 'オッズ取得エラー'); }
     finally { setOddsLoading(false); }
   }

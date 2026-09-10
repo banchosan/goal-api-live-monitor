@@ -2,6 +2,7 @@ import { env } from 'cloudflare:workers';
 import { ensureRuntimeSchema } from '@/db/schema';
 import { fetchTeamResults, TEAM_RESULTS_CONCURRENCY } from '@/lib/team-results-client';
 import { evaluateFormCandidate, toChronologicalResults } from '@/lib/form-candidate-rules';
+import { saveTypedFormObservations } from '@/lib/prematch-dual-write';
 
 export const dynamic = 'force-dynamic';
 
@@ -146,5 +147,15 @@ export async function POST(request: Request) {
   let saved = true;
   try { await saveAnalysis({ runId, createdAt, checkedTeams: checked.length, failedTeams, apiRequests, candidates, checked }); }
   catch (error) { saved = false; console.error('form analysis save failed', error); }
-  return Response.json({ candidates, excludedByRecentForm, excludedCount: excludedByRecentForm.length, checkedTeams: checked.length, failedTeams, apiRequests, retryCount, outcomeCounts, runId, saved });
+  // Raw history is the source of truth. Typed conversion is deliberately best-effort
+  // and is never allowed to turn a successful collection into a failed one.
+  let typed = { saved: 0, existing: 0, skipped: 0, error: 0 };
+  if (saved) try {
+    const db = (env as unknown as { DB: D1Database }).DB;
+    typed = await saveTypedFormObservations(db, { runId, observedAt: createdAt, checked });
+  } catch (error) {
+    typed.error = 1;
+    console.error('typed form dual-write failed; raw form run remains saved', error);
+  }
+  return Response.json({ candidates, excludedByRecentForm, excludedCount: excludedByRecentForm.length, checkedTeams: checked.length, failedTeams, apiRequests, retryCount, outcomeCounts, runId, saved, typed });
 }
