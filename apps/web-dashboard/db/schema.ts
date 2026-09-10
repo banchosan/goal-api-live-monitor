@@ -172,12 +172,15 @@ export const canonicalSchema = [
     fixture_id TEXT NOT NULL REFERENCES core_fixtures(id),
     bookmaker TEXT NOT NULL,
     market TEXT NOT NULL,
+    period TEXT NOT NULL CHECK (period IN ('FULL_TIME', 'FIRST_HALF', 'SECOND_HALF')),
+    stat_type TEXT NOT NULL CHECK (stat_type IN ('RESULT', 'GOALS', 'CORNERS')),
+    side TEXT CHECK (side IN ('HOME', 'AWAY', 'DRAW', 'OVER', 'UNDER')),
     selection TEXT NOT NULL,
     line REAL,
     odds REAL NOT NULL,
     captured_at TEXT NOT NULL,
     raw_json TEXT NOT NULL,
-    UNIQUE (capture_run_id, fixture_id, bookmaker, market, selection, line, odds)
+    UNIQUE (capture_run_id, fixture_id, bookmaker, market, period, stat_type, side, selection, line, odds)
   )`,
   'CREATE INDEX IF NOT EXISTS odds_market_fixture_time_idx ON odds_market_values (fixture_id, captured_at DESC)',
   'CREATE INDEX IF NOT EXISTS odds_market_lookup_idx ON odds_market_values (market, selection, line, odds)',
