@@ -286,3 +286,12 @@ export const canonicalSchema = [
 // page request from silently creating or altering a database.  Run
 // `npm run db:local:adopt` before starting the app on an existing local DB.
 export const monitorSchema: readonly string[] = [];
+
+// Schema changes are applied by local migration/adoption tooling, never by a
+// request handler. D1 rejects an empty `batch`, so this is intentionally a
+// no-op once the database has been adopted.
+export async function ensureRuntimeSchema(db: D1Database): Promise<void> {
+  if (monitorSchema.length > 0) {
+    await db.batch(monitorSchema.map((statement) => db.prepare(statement)));
+  }
+}

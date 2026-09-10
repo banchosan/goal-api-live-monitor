@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:workers';
-import { monitorSchema } from '@/db/schema';
+import { ensureRuntimeSchema } from '@/db/schema';
 import { fixtureDetails, resultFixtureRecords } from '@/lib/result-capture';
 
 export const dynamic = 'force-dynamic';
@@ -30,7 +30,7 @@ export async function POST(request: Request) {
   if (!body.runId) return Response.json({ error: 'runIdが必要です', apiRequests: 0 }, { status: 400 });
 
   const db = (env as unknown as { DB: D1Database }).DB;
-  await db.batch(monitorSchema.map((sql) => db.prepare(sql)));
+  await ensureRuntimeSchema(db);
   const snapshots = await db.prepare('SELECT api_fixture_id,kickoff FROM odds_snapshots WHERE run_id=?').bind(body.runId).all<SnapshotRow>();
   const fixtureIds = new Set((snapshots.results ?? []).map((snapshot) => String(snapshot.api_fixture_id)));
   const dates = [...new Set((snapshots.results ?? []).map((snapshot) => jstDate(snapshot.kickoff)))];
@@ -64,7 +64,7 @@ export async function POST(request: Request) {
 export async function GET(request: Request) {
   const runId = new URL(request.url).searchParams.get('runId');
   const db = (env as unknown as { DB: D1Database }).DB;
-  await db.batch(monitorSchema.map((sql) => db.prepare(sql)));
+  await ensureRuntimeSchema(db);
   const row = runId
     ? await db.prepare('SELECT created_at,api_requests,raw_json FROM result_snapshots WHERE odds_run_id=? ORDER BY created_at DESC LIMIT 1').bind(runId).first<{ created_at: string; api_requests: number; raw_json: string }>()
     : null;

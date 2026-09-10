@@ -1,7 +1,7 @@
-import {env} from 'cloudflare:workers';import {monitorSchema} from '@/db/schema';import {analysisDownloadFilename,detailForAnalysis,resultFixtureRecords} from '@/lib/result-capture';export const dynamic='force-dynamic';
+import {env} from 'cloudflare:workers';import {ensureRuntimeSchema} from '@/db/schema';import {analysisDownloadFilename,detailForAnalysis,resultFixtureRecords} from '@/lib/result-capture';export const dynamic='force-dynamic';
 type OddsRun={run_id:string;form_run_id:string|null;created_at:string;api_requests:number;matched_fixtures:number;unmatched_json:string;fixtures_json:string};
 export async function GET(request:Request){
- const db=(env as unknown as{DB:D1Database}).DB;await db.batch(monitorSchema.map(sql=>db.prepare(sql)));const wanted=new URL(request.url).searchParams.get('runId');
+ const db=(env as unknown as{DB:D1Database}).DB;await ensureRuntimeSchema(db);const wanted=new URL(request.url).searchParams.get('runId');
  const statement=db.prepare(`SELECT run_id,form_run_id,created_at,api_requests,matched_fixtures,unmatched_json,fixtures_json FROM odds_analysis_runs ${wanted?'WHERE run_id=? ':''}ORDER BY created_at DESC LIMIT 1`),run=wanted?await statement.bind(wanted).first<OddsRun>():await statement.first<OddsRun>();if(!run)return Response.json({error:'保存済みオッズ履歴がありません'},{status:404});
  const snapshots=await db.prepare('SELECT api_fixture_id,kickoff,home,away,raw_json FROM odds_snapshots WHERE run_id=? ORDER BY kickoff,id').bind(run.run_id).all();
  const form=run.form_run_id?await db.prepare('SELECT run_id,created_at,checked_teams,failed_teams,api_requests,candidates_json,checked_json FROM form_analysis_runs WHERE run_id=?').bind(run.form_run_id).first<any>():null;

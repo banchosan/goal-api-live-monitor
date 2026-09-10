@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:workers';
-import { monitorSchema } from '@/db/schema';
+import { ensureRuntimeSchema } from '@/db/schema';
 import { fetchTeamResults, TEAM_RESULTS_CONCURRENCY } from '@/lib/team-results-client';
 import { evaluateFormCandidate, toChronologicalResults } from '@/lib/form-candidate-rules';
 
@@ -14,11 +14,9 @@ type InputFixture = {
 
 type TeamTask = { teamId: string; team: string; side: 'home' | 'away'; opponent: string; fixture: InputFixture };
 
-let schemaReady: Promise<void> | undefined;
 async function saveAnalysis(payload: { runId:string;createdAt:string;checkedTeams:number;failedTeams:number;apiRequests:number;candidates:unknown;checked:unknown }) {
   const db = (env as unknown as { DB: D1Database }).DB;
-  schemaReady ??= db.batch(monitorSchema.map((statement) => db.prepare(statement))).then(() => undefined);
-  await schemaReady;
+  await ensureRuntimeSchema(db);
   await db.prepare(`INSERT INTO form_analysis_runs
     (run_id, created_at, checked_teams, failed_teams, api_requests, candidates_json, checked_json)
     VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(payload.runId,payload.createdAt,payload.checkedTeams,payload.failedTeams,payload.apiRequests,JSON.stringify(payload.candidates),JSON.stringify(payload.checked)).run();

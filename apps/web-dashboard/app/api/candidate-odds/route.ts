@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:workers';
-import { monitorSchema } from '@/db/schema';
+import { ensureRuntimeSchema } from '@/db/schema';
 
 export const dynamic = 'force-dynamic';
 const BASE = 'https://v3.football.api-sports.io';
@@ -17,7 +17,7 @@ export async function POST(request:Request){
   let apiRequests=0,lastRequest=0;const requestApi=async(endpoint:string,params:Record<string,string>)=>{const wait=6500-(Date.now()-lastRequest);if(wait>0)await new Promise(r=>setTimeout(r,wait));const response=await fetch(`${BASE}${endpoint}?${new URLSearchParams(params)}`,{headers:{'x-apisports-key':key},cache:'no-store'});lastRequest=Date.now();apiRequests++;const payload=await response.json();if(!response.ok)throw new Error(`API-Football HTTP ${response.status}`);return payload};
   const fixtureResponses=[];const fixtures:any[]=[];for(const date of [...new Set(list.map(t=>jstDate(t.kickoffUtc)))]){const payload=await requestApi('/fixtures',{date,timezone:'Asia/Tokyo'});fixtureResponses.push({date,payload});fixtures.push(...(payload.response??[]))}
   const matched=[];const unmatched=[];for(const target of list){const found=fixtures.find(f=>sameName(target.home,f.teams?.home?.name??'')&&sameName(target.away,f.teams?.away?.name??''));if(!found){unmatched.push(target);continue}const raw=await requestApi('/odds',{fixture:String(found.fixture.id)});matched.push({target,fixture:found,raw})}
-  const db=(env as unknown as{DB:D1Database}).DB;await db.batch(monitorSchema.map(s=>db.prepare(s)));const createdAt=new Date().toISOString(),runId=`${createdAt}-${crypto.randomUUID()}`;await db.prepare(`INSERT INTO odds_analysis_runs (run_id,form_run_id,created_at,api_requests,matched_fixtures,unmatched_json,fixtures_json) VALUES (?,?,?,?,?,?,?)`).bind(runId,body?.formRunId??null,createdAt,apiRequests,matched.length,JSON.stringify(unmatched),JSON.stringify(fixtureResponses)).run();
+  const db=(env as unknown as{DB:D1Database}).DB;await ensureRuntimeSchema(db);const createdAt=new Date().toISOString(),runId=`${createdAt}-${crypto.randomUUID()}`;await db.prepare(`INSERT INTO odds_analysis_runs (run_id,form_run_id,created_at,api_requests,matched_fixtures,unmatched_json,fixtures_json) VALUES (?,?,?,?,?,?,?)`).bind(runId,body?.formRunId??null,createdAt,apiRequests,matched.length,JSON.stringify(unmatched),JSON.stringify(fixtureResponses)).run();
   if(matched.length){const insert=db.prepare(`INSERT INTO odds_snapshots (run_id,api_fixture_id,kickoff,home,away,raw_json) VALUES (?,?,?,?,?,?)`);await db.batch(matched.map(item=>insert.bind(runId,String(item.fixture.fixture.id),item.fixture.fixture.date,item.fixture.teams.home.name,item.fixture.teams.away.name,JSON.stringify(item.raw))))}
   return Response.json({runId,saved:true,apiRequests,matched:matched.length,unmatched});
 }
