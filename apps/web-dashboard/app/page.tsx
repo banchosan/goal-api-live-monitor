@@ -5,6 +5,7 @@ import './bookmarks.css';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { visibleCollectorFixtures, withoutFixture } from '@/lib/live-monitor-state';
 import { displayMatchMinute } from '@/lib/live-minute';
+import { readJsonResponse, responseFailureMessage } from '@/lib/safe-json-response';
 
 type Fixture = { id: string; league: string; country: string; home: string; away: string; homeScore: string; awayScore: string; status: string; kickoffUtc?: string };
 type UpcomingFixture = { id: string; league: string; country: string; home: string; away: string; homeTeamId: string; awayTeamId: string; kickoffUtc: string; kickoffJst: string; status: string };
@@ -252,10 +253,13 @@ function UpcomingBoard({ fixtures, loading, onRest, bookmarks, onBookmark }: { f
     setOddsLoading(true); setOddsMessage('API-Footballから候補試合のオッズを取得中… 毎分制限のため数分かかる場合があります。');
     try {
       const response = await fetch('/api/candidate-odds', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ formRunId, candidates }) });
-      const data = await response.json();
+      const parsed = await readJsonResponse<any>(response);
+      if (!parsed.ok) throw new Error(responseFailureMessage(parsed, 'オッズ取得画面への応答'));
+      const data = parsed.data;
       if (!response.ok) throw new Error(data.error || 'オッズ取得に失敗しました');
       const identity=data.identity;const identityMessage=identity?` fixture identity: 保存 ${identity.saved ?? 0} / 既存 ${identity.noop ?? 0} / 保留 ${identity.skipped ?? 0} / conflict ${identity.conflict ?? 0}。`:'';const typed=data.typed;const typedMessage=typed?` typed odds: capture ${typed.captureRuns ?? 0} / markets ${typed.markets ?? typed.saved ?? 0} / 保留 ${identity?.skipped ?? 0} / malformed ${typed.malformed ?? 0} / error ${typed.error ?? 0}。`:'';
-      setOddsMessage(`${data.matched}試合の全オッズを${data.apiRequests} API-Football RESTで取得・履歴保存しました。未一致 ${data.unmatched.length}試合。${identityMessage}${typedMessage}`);
+      const failures=Array.isArray(data.failures)&&data.failures.length?` API失敗 ${data.failures.length}件（${data.failures.map((failure:any)=>`${failure.endpoint} ${failure.status||failure.kind}`).join(' / ')}）。`:'';
+      setOddsMessage(`${data.matched}試合の全オッズを${data.apiRequests} API-Football RESTで取得・履歴保存しました。未一致 ${data.unmatched.length}試合。${identityMessage}${typedMessage}${failures}`);
     } catch (error) { setOddsMessage(error instanceof Error ? error.message : 'オッズ取得エラー'); }
     finally { setOddsLoading(false); }
   }
