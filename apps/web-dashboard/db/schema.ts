@@ -121,6 +121,17 @@ export const canonicalSchema = [
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS team_provider_ids (
+    provider TEXT NOT NULL,
+    external_team_id TEXT NOT NULL,
+    team_id TEXT NOT NULL REFERENCES core_teams(id),
+    provider_payload_json TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    PRIMARY KEY (provider, external_team_id),
+    UNIQUE (team_id, provider, external_team_id)
+  )`,
+  'CREATE INDEX IF NOT EXISTS team_provider_team_idx ON team_provider_ids (team_id)',
   `CREATE TABLE IF NOT EXISTS core_fixtures (
     id TEXT PRIMARY KEY,
     kickoff_utc TEXT,
