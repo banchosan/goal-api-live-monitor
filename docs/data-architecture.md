@@ -38,7 +38,9 @@ before that moment; they must not use a later snapshot.
 ## Live scale
 
 `monitor_events` remains append-only. `live_snapshots` is a compact projection
-for frequent feature queries, keyed by its source raw event. Use
+for frequent feature queries, keyed by its source raw event. The Collector only
+projects a `match_update` after resolving `(goal-api, external_fixture_id)` in
+`fixture_provider_ids`; it never creates a core fixture from team names. Use
 `(fixture_id, captured_at)` for time windows and `(fixture_id, elapsed_minute)`
 for HT→60 / 60→70 reconstruction. Missing provider statistics remain NULL;
 zero is never substituted for missing data.

@@ -11,7 +11,12 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 SCHEMA=ROOT/'apps/web-dashboard/db/schema.ts'
 INTERNAL={'sqlite_sequence','d1_migrations','_cf_METADATA'}
-STAMP='0004_local_canonical_adoption.sql'
+STAMP='0005_live_snapshot_projection.sql'
+LIVE_SNAPSHOT_PROJECTION_COLUMNS={
+ 'provider','provider_fixture_id','provider_event_key','added_time','match_status',
+ 'attacks_home','attacks_away','yellow_cards_home','yellow_cards_away','red_cards_home','red_cards_away',
+ 'saves_home','saves_away','passes_total_home','passes_total_away','passes_accurate_home','passes_accurate_away'
+}
 
 def stmts():
  text=SCHEMA.read_text(); a=re.findall(r'`([^`]+)`',text)+re.findall(r"'(CREATE INDEX[^']+)'",text)
@@ -68,26 +73,42 @@ def summary(c,t='live_snapshots'):
  return c.execute(f'SELECT COUNT(*),COUNT(DISTINCT session_id),SUM(captured_at IS NULL),MIN(captured_at),MAX(captured_at) FROM {q(t)}').fetchone()
 def validate(c):
  names={x[1] for x in c.execute('PRAGMA table_info(live_snapshots)')}
- if 'source_client_event_id' in names:return False
+ if 'source_client_event_id' in names:return 'modern'
  if 'source_event_id' not in names:raise RuntimeError('UNKNOWN_SCHEMA')
  bad=c.execute('''SELECT COUNT(*) FROM live_snapshots l LEFT JOIN monitor_events m ON m.id=l.source_event_id WHERE l.source_event_id IS NULL OR m.id IS NULL OR m.client_event_id IS NULL''').fetchone()[0]
  dup=c.execute('''SELECT COUNT(*) FROM(SELECT l.session_id,m.client_event_id,COUNT(*) n FROM live_snapshots l JOIN monitor_events m ON m.id=l.source_event_id GROUP BY l.session_id,m.client_event_id HAVING n>1)''').fetchone()[0]
  if bad:raise RuntimeError(f'BLOCKED_NULL_OR_UNMATCHED_ROWS:{bad}')
  if dup:raise RuntimeError(f'BLOCKED_DUPLICATES:{dup}')
- return True
-def reconcile(c):
- if not validate(c):return False
+ return 'legacy'
+def snapshot_columns(c, table):
+ return [x[1] for x in c.execute(f'PRAGMA table_info({q(table)})')]
+def rebuild_live_snapshots(c, old_table, source_mode):
  before=summary(c);c.execute('ALTER TABLE live_snapshots RENAME TO live_snapshots__legacy')
+ # SQLite retains explicit index names after table rename.  Drop them before
+ # creating the replacement table so the canonical index creation is reliable.
+ c.execute('DROP INDEX IF EXISTS live_snapshots_fixture_time_idx');c.execute('DROP INDEX IF EXISTS live_snapshots_fixture_minute_idx')
  sql=next(x for x in stmts() if x.startswith('CREATE TABLE IF NOT EXISTS live_snapshots'));c.execute(sql)
- cols=[x[1] for x in c.execute('PRAGMA table_info(live_snapshots__legacy)') if x[1] not in ('id','source_event_id')]
- target=['fixture_id','session_id','source_client_event_id']+cols[2:]
- select=['l.fixture_id','l.session_id','m.client_event_id']+[f'l.{q(x)}' for x in cols[2:]]
- c.execute(f'INSERT INTO live_snapshots({",".join(q(x) for x in target)}) SELECT {",".join(select)} FROM live_snapshots__legacy l JOIN monitor_events m ON m.id=l.source_event_id')
+ old=set(snapshot_columns(c,'live_snapshots__legacy')); target=[x for x in snapshot_columns(c,'live_snapshots') if x!='id']
+ select=[]
+ for name in target:
+  if name=='source_client_event_id':select.append('m.client_event_id' if source_mode=='legacy' else 'l.source_client_event_id')
+  elif name=='provider':select.append("COALESCE(l.provider,'goal-api')" if name in old else "'goal-api'")
+  elif name=='provider_event_key':select.append("COALESCE(NULLIF(l.provider_event_key,''),l.source_client_event_id)" if name in old else ('m.client_event_id' if source_mode=='legacy' else 'l.source_client_event_id'))
+  elif name in old:select.append(f'l.{q(name)}')
+  else:select.append('NULL')
+ join=' JOIN monitor_events m ON m.id=l.source_event_id' if source_mode=='legacy' else ''
+ c.execute(f'INSERT INTO live_snapshots({",".join(q(x) for x in target)}) SELECT {",".join(select)} FROM live_snapshots__legacy l{join}')
  if summary(c)!=before:raise RuntimeError(f'INTEGRITY_MISMATCH:{before}!={summary(c)}')
  c.execute('DROP TABLE live_snapshots__legacy')
  for s in stmts():
   if s.startswith('CREATE INDEX') and 'live_snapshots_' in s:c.execute(s)
  c.commit();return True
+def reconcile(c):
+ mode=validate(c)
+ if mode=='legacy':return rebuild_live_snapshots(c,'live_snapshots__legacy','legacy')
+ current=set(snapshot_columns(c,'live_snapshots'))
+ if LIVE_SNAPSHOT_PROJECTION_COLUMNS-current:return rebuild_live_snapshots(c,'live_snapshots__legacy','modern')
+ return False
 def adopt(path):
  c=sqlite3.connect(path);before=fp(c);rebuilt=reconcile(c)
  c.execute('CREATE TABLE IF NOT EXISTS d1_migrations(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL UNIQUE,applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)');c.execute('INSERT OR IGNORE INTO d1_migrations(name) VALUES(?)',(STAMP,));c.commit()
@@ -106,17 +127,25 @@ def fixture(p,kind):
    c.execute('DROP INDEX monitor_events_client_event_idx')
    c.execute("INSERT INTO monitor_events(session_id,fixture_id,event_type,received_at,payload_json,client_event_id)VALUES('s','f','match_update','2026-01-01T00:01:00Z','{}','event-1')");c.execute("INSERT INTO live_snapshots(fixture_id,session_id,source_event_id,captured_at,raw_statistics_json)VALUES('f','s',2,'2026-01-01T00:01:00Z','[]')")
  c.commit();return c
+def modern_pre_projection_fixture(p):
+ c=sqlite3.connect(p);create(c);c.execute('DROP TABLE live_snapshots')
+ c.execute('''CREATE TABLE live_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT,fixture_id TEXT NOT NULL,session_id TEXT NOT NULL,source_client_event_id TEXT NOT NULL,provider_timestamp TEXT,captured_at TEXT NOT NULL,elapsed_minute INTEGER,home_score INTEGER,away_score INTEGER,shots_home REAL,shots_away REAL,shots_on_target_home REAL,shots_on_target_away REAL,corners_home REAL,corners_away REAL,dangerous_attacks_home REAL,dangerous_attacks_away REAL,possession_home REAL,possession_away REAL,xg_home REAL,xg_away REAL,raw_statistics_json TEXT NOT NULL,UNIQUE(session_id,source_client_event_id))''')
+ c.execute('CREATE INDEX live_snapshots_fixture_time_idx ON live_snapshots(fixture_id,captured_at)');c.execute('CREATE INDEX live_snapshots_fixture_minute_idx ON live_snapshots(fixture_id,elapsed_minute)')
+ c.execute("INSERT INTO core_fixtures(id,home_name,away_name,created_at,updated_at) VALUES('f','Home','Away','2026-01-01','2026-01-01')")
+ c.execute("INSERT INTO live_snapshots(fixture_id,session_id,source_client_event_id,captured_at,raw_statistics_json) VALUES('f','s','event-1','2026-01-01T00:00:00Z','[]')")
+ c.commit();return c
 def tests():
  with tempfile.TemporaryDirectory() as d:
   d=Path(d);c=sqlite3.connect(d/'clean.db');create(c);clean=fp(c)
   results={}
   for k in ('zero','valid'):
    fixture(d/f'{k}.db',k);results[k]=adopt(d/f'{k}.db');assert results[k]['after']==clean
+  modern_pre_projection_fixture(d/'modern.db');results['modern']=adopt(d/'modern.db');assert results['modern']['after']==clean
   for k,tag in [('null','BLOCKED_NULL_OR_UNMATCHED_ROWS'),('unmatched','BLOCKED_NULL_OR_UNMATCHED_ROWS'),('duplicate','BLOCKED_DUPLICATES')]:
    fixture(d/f'{k}.db',k)
    try:adopt(d/f'{k}.db');raise AssertionError(k)
    except RuntimeError as e:assert str(e).startswith(tag),e
-  return {'tests':5,'clean':clean,'adopted':results['valid']['after'],'equal':True}
+  return {'tests':6,'clean':clean,'adopted':results['valid']['after'],'equal':True}
 def emit(path):
  path.parent.mkdir(parents=True,exist_ok=True);path.write_text('-- Generated from apps/web-dashboard/db/schema.ts. Do not hand edit.\nBEGIN;\n'+'\n'.join(x+';' for x in stmts())+'\nCOMMIT;\n')
 def main():

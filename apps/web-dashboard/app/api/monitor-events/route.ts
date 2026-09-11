@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:workers';
 import { ensureMonitorSchema } from '@/db/monitor';
-import { projectLiveSnapshot } from '@/lib/live-snapshot';
+import { normalizeGoalLiveSnapshot } from '@/lib/goal-live-normalizer';
 
 export const dynamic = 'force-dynamic';
 
@@ -61,47 +61,54 @@ export async function POST(request: Request) {
     event.payloadHash ?? null,
     event.schemaVersion ?? 1,
   )));
-  await persistLiveFacts(db, events);
-  return Response.json({ saved: events.length });
+  // Raw monitor_events is the durable primary record. Projection is best-effort
+  // so a typed failure never makes the collector retry this raw batch.
+  const projection = await persistLiveSnapshots(db, events).catch((error) => ({
+    saved: 0, skipped: 0, duplicates: 0, errors: 1,
+    error: error instanceof Error ? error.message : String(error),
+  }));
+  return Response.json({ saved: events.length, projection });
 }
 
-function coreTeamId(name: string) {
-  // Preserve non-Latin names; ASCII-only slugging would collapse distinct teams.
-  return `goal-api:team:${encodeURIComponent(name.normalize('NFKC').trim().toLowerCase())}`;
-}
+type ProjectionSummary = { saved: number; skipped: number; duplicates: number; errors: number; error?: string };
 
-async function persistLiveFacts(db: D1Database, events: StoredEvent[]) {
-  const now = new Date().toISOString();
+async function persistLiveSnapshots(db: D1Database, events: StoredEvent[]): Promise<ProjectionSummary> {
   const statements: D1PreparedStatement[] = [];
+  const summary: ProjectionSummary = { saved: 0, skipped: 0, duplicates: 0, errors: 0 };
   for (const event of events) {
-    if (event.eventType !== 'match_update' || !event.clientEventId) continue;
-    const home = event.home ?? 'Home'; const away = event.away ?? 'Away';
-    const homeTeamId = coreTeamId(home); const awayTeamId = coreTeamId(away);
-    const fixtureId = `goal-api:${event.fixtureId}`;
-    statements.push(
-      db.prepare(`INSERT INTO core_teams (id,name,created_at,updated_at) VALUES (?,?,?,?)
-        ON CONFLICT(id) DO UPDATE SET name=excluded.name,updated_at=excluded.updated_at`).bind(homeTeamId, home, now, now),
-      db.prepare(`INSERT INTO core_teams (id,name,created_at,updated_at) VALUES (?,?,?,?)
-        ON CONFLICT(id) DO UPDATE SET name=excluded.name,updated_at=excluded.updated_at`).bind(awayTeamId, away, now, now),
-      db.prepare(`INSERT INTO core_fixtures (id,home_team_id,away_team_id,home_name,away_name,created_at,updated_at) VALUES (?,?,?,?,?,?,?)
-        ON CONFLICT(id) DO UPDATE SET home_name=excluded.home_name,away_name=excluded.away_name,updated_at=excluded.updated_at`).bind(fixtureId, homeTeamId, awayTeamId, home, away, now, now),
-      db.prepare(`INSERT INTO fixture_provider_ids (provider,external_fixture_id,fixture_id,first_seen_at,last_seen_at) VALUES ('goal-api',?,?,?,?)
-        ON CONFLICT(provider,external_fixture_id) DO UPDATE SET last_seen_at=excluded.last_seen_at`).bind(event.fixtureId, fixtureId, now, now),
-    );
-    const snapshot = projectLiveSnapshot(event.payload);
+    if (event.eventType !== 'match_update' || !event.clientEventId) { summary.skipped += 1; continue; }
+    const mapping = await db.prepare(`SELECT fixture_id FROM fixture_provider_ids
+      WHERE provider='goal-api' AND external_fixture_id=?`).bind(event.fixtureId).first<{ fixture_id: string }>();
+    // No name-based fallback: an unresolved fixture remains raw-only.
+    if (!mapping?.fixture_id) { summary.skipped += 1; continue; }
+    const snapshot = normalizeGoalLiveSnapshot(event, mapping.fixture_id);
+    if (!snapshot) { summary.skipped += 1; continue; }
     statements.push(db.prepare(`INSERT OR IGNORE INTO live_snapshots
-      (fixture_id,session_id,source_client_event_id,provider_timestamp,captured_at,elapsed_minute,home_score,away_score,
-       shots_home,shots_away,shots_on_target_home,shots_on_target_away,corners_home,corners_away,
-       dangerous_attacks_home,dangerous_attacks_away,possession_home,possession_away,xg_home,xg_away,raw_statistics_json)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
-      fixtureId, event.sessionId, event.clientEventId, event.providerTimestamp ?? null, event.receivedAt,
-      snapshot.elapsedMinute, snapshot.homeScore, snapshot.awayScore, snapshot.shotsHome, snapshot.shotsAway,
+      (fixture_id,session_id,source_client_event_id,provider,provider_fixture_id,provider_event_key,provider_timestamp,captured_at,
+       elapsed_minute,added_time,match_status,home_score,away_score,shots_home,shots_away,shots_on_target_home,shots_on_target_away,
+       corners_home,corners_away,attacks_home,attacks_away,dangerous_attacks_home,dangerous_attacks_away,possession_home,possession_away,
+       yellow_cards_home,yellow_cards_away,red_cards_home,red_cards_away,saves_home,saves_away,passes_total_home,passes_total_away,
+       passes_accurate_home,passes_accurate_away,xg_home,xg_away,raw_statistics_json)
+      VALUES (${Array.from({ length: 38 }, () => '?').join(',')})`).bind(
+      snapshot.coreFixtureId, event.sessionId, snapshot.sourceClientEventId, snapshot.provider, snapshot.providerFixtureId,
+      snapshot.providerEventKey, snapshot.providerTimestamp, snapshot.capturedAt, snapshot.elapsedMinute, snapshot.addedTime,
+      snapshot.matchStatus, snapshot.homeScore, snapshot.awayScore, snapshot.shotsHome, snapshot.shotsAway,
       snapshot.shotsOnTargetHome, snapshot.shotsOnTargetAway, snapshot.cornersHome, snapshot.cornersAway,
-      snapshot.dangerousAttacksHome, snapshot.dangerousAttacksAway, snapshot.possessionHome, snapshot.possessionAway,
+      snapshot.attacksHome, snapshot.attacksAway, snapshot.dangerousAttacksHome, snapshot.dangerousAttacksAway,
+      snapshot.possessionHome, snapshot.possessionAway, snapshot.yellowCardsHome, snapshot.yellowCardsAway,
+      snapshot.redCardsHome, snapshot.redCardsAway, snapshot.savesHome, snapshot.savesAway,
+      snapshot.passesTotalHome, snapshot.passesTotalAway, snapshot.passesAccurateHome, snapshot.passesAccurateAway,
       snapshot.xgHome, snapshot.xgAway, JSON.stringify(snapshot.rawStatistics),
     ));
   }
-  if (statements.length) await db.batch(statements);
+  if (!statements.length) return summary;
+  try {
+    const results = await db.batch(statements);
+    summary.saved = results.filter((result) => Number(result.meta?.changes ?? 0) > 0).length;
+    summary.duplicates = statements.length - summary.saved;
+  }
+  catch (error) { return { ...summary, saved: 0, errors: statements.length, error: error instanceof Error ? error.message : String(error) }; }
+  return summary;
 }
 
 export async function GET() {

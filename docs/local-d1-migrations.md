@@ -22,7 +22,11 @@ npm run db:local:adopt      # validates, reconciles live_snapshots, then stamps
 requires every `source_event_id` to join to `monitor_events.id` with a non-null,
 unique `monitor_events.client_event_id`.  Only then it rebuilds the table with
 `source_client_event_id`, verifies row/session/null/timestamp aggregates, and
-records `0004_local_canonical_adoption.sql` in local `d1_migrations`.
+records the local canonical adoption stamps in `d1_migrations`.  When the
+LIVE projection columns are missing, it safely rebuilds `live_snapshots`,
+preserving every row and using `source_client_event_id` as the legacy provider
+event key.  This is required before the Collector can write provider/status,
+added-time, attack, card, save and pass fields.
 
 It stops without rebuilding for NULL source IDs, unmatched monitor events, NULL
 client event IDs, duplicate `(session_id, client_event_id)`, or an unknown
