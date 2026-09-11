@@ -78,9 +78,10 @@ function statistic(statistics: LiveStatistic[], names: string[]) {
   return statistics.find((item) => names.includes(String(item.type ?? '').trim().toLowerCase())) ?? null;
 }
 
-function sides(statistics: LiveStatistic[], name: keyof typeof aliases) {
+function sides(statistics: LiveStatistic[], name: keyof typeof aliases, status: string | null) {
   const entry = statistic(statistics, aliases[name]);
-  return { home: numberOrNull(entry?.home), away: numberOrNull(entry?.away) };
+  const home = numberOrNull(entry?.home); const away = numberOrNull(entry?.away);
+  return isGoalProviderPlaceholderZeroPair(entry?.type, home, away, status) ? { home: null, away: null } : { home, away };
 }
 
 /**
@@ -98,12 +99,12 @@ export function normalizeGoalLiveSnapshot(event: MonitorMatchUpdate, coreFixture
     ? null : String(event.providerTimestamp);
   const providerEventKey = event.payloadHash?.trim() || `${providerTimestamp ?? 'no-provider-timestamp'}:${event.clientEventId}`;
   if (!providerEventKey) return null;
-  const shots = sides(statistics, 'shots'); const shotsOnTarget = sides(statistics, 'shotsOnTarget');
-  const corners = sides(statistics, 'corners'); const attacks = sides(statistics, 'attacks');
-  const dangerousAttacks = sides(statistics, 'dangerousAttacks'); const possession = sides(statistics, 'possession');
-  const yellowCards = sides(statistics, 'yellowCards'); const redCards = sides(statistics, 'redCards');
-  const saves = sides(statistics, 'saves'); const passesTotal = sides(statistics, 'passesTotal');
-  const passesAccurate = sides(statistics, 'passesAccurate'); const xg = sides(statistics, 'xg');
+  const shots = sides(statistics, 'shots', status.matchStatus); const shotsOnTarget = sides(statistics, 'shotsOnTarget', status.matchStatus);
+  const corners = sides(statistics, 'corners', status.matchStatus); const attacks = sides(statistics, 'attacks', status.matchStatus);
+  const dangerousAttacks = sides(statistics, 'dangerousAttacks', status.matchStatus); const possession = sides(statistics, 'possession', status.matchStatus);
+  const yellowCards = sides(statistics, 'yellowCards', status.matchStatus); const redCards = sides(statistics, 'redCards', status.matchStatus);
+  const saves = sides(statistics, 'saves', status.matchStatus); const passesTotal = sides(statistics, 'passesTotal', status.matchStatus);
+  const passesAccurate = sides(statistics, 'passesAccurate', status.matchStatus); const xg = sides(statistics, 'xg', status.matchStatus);
   return {
     provider: 'goal-api', providerFixtureId: event.fixtureId, providerEventKey, coreFixtureId,
     sourceClientEventId: event.clientEventId, providerTimestamp, capturedAt: event.receivedAt,
@@ -118,4 +119,5 @@ export function normalizeGoalLiveSnapshot(event: MonitorMatchUpdate, coreFixture
     xgHome: xg.home, xgAway: xg.away, rawStatistics: statistics,
   };
 }
+import { isGoalProviderPlaceholderZeroPair } from './live-stat-availability.ts';
 

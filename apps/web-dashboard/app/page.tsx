@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { visibleCollectorFixtures, withoutFixture } from '@/lib/live-monitor-state';
 import { displayMatchMinute } from '@/lib/live-minute';
 import { readJsonResponse, responseFailureMessage } from '@/lib/safe-json-response';
+import { isGoalProviderPlaceholderZeroPair } from '@/lib/live-stat-availability';
 
 type Fixture = { id: string; league: string; country: string; home: string; away: string; homeScore: string; awayScore: string; status: string; kickoffUtc?: string };
 type UpcomingFixture = { id: string; league: string; country: string; home: string; away: string; homeTeamId: string; awayTeamId: string; kickoffUtc: string; kickoffJst: string; status: string };
@@ -351,30 +352,31 @@ function MatchCard({ match, onCapture, onSelectSnapshot, onRemove, onRefresh }: 
     {match.htStats && <DeltaPanel match={match} />}
     <div className="snapshot-panel"><div className="snapshot-actions"><button onClick={onCapture} disabled={!match.stats.length}>現在値をスナップ（REST 0）</button><span>{match.snapshots.length ? `${match.snapshots.length}件保存` : '好きな時点を保存できます'}</span></div>{match.snapshots.length > 0 && <div className="snapshot-tabs">{match.snapshots.map((snapshot) => <button className={snapshot.id === match.selectedSnapshotId ? 'active' : ''} onClick={() => onSelectSnapshot(snapshot.id)} key={snapshot.id}>{formatSnapshotStatus(snapshot.status)} <small>{snapshot.capturedAt}</small></button>)}</div>}</div>
     {selectedSnapshot && <SnapshotDeltaPanel match={match} snapshot={selectedSnapshot} />}
-    {match.stats.length ? <div className="stats"><div className="stat-head"><span>HOME</span><b>CURRENT STATISTICS</b><span>AWAY</span></div>{match.stats.map((s, i) => <div className="stat-row" key={`${s.type}-${i}`}><strong>{s.home ?? 'N/A'}</strong><span>{s.type}</span><strong>{s.away ?? 'N/A'}</strong></div>)}</div> : providerSilent ? <div className="waiting"><p>Socket接続・subscribeは成功しましたが、GOAL APIからmatch_updateが届いていません。分数とstatsはprovider未配信です。</p></div> : <div className="waiting"><span /><p>WebSocketの最初のmatch_updateを待っています</p></div>}
+    {match.stats.length ? <div className="stats"><div className="stat-head"><span>HOME</span><b>CURRENT STATISTICS</b><span>AWAY</span></div>{match.stats.map((s, i) => { const unavailable = isGoalProviderPlaceholderZeroPair(s.type, s.home, s.away, match.status); return <div className="stat-row" key={`${s.type}-${i}`}><strong>{unavailable ? '—' : s.home ?? 'N/A'}</strong><span>{s.type}{unavailable ? '（GOAL API未提供）' : ''}</span><strong>{unavailable ? '—' : s.away ?? 'N/A'}</strong></div>; })}</div> : providerSilent ? <div className="waiting"><p>Socket接続・subscribeは成功しましたが、GOAL APIからmatch_updateが届いていません。分数とstatsはprovider未配信です。</p></div> : <div className="waiting"><span /><p>WebSocketの最初のmatch_updateを待っています</p></div>}
   </article>;
 }
 
 function DeltaPanel({ match }: { match: LiveMatch }) {
   const target = match.sixtyStats ?? match.stats;
-  const rows = statDeltas(match.htStats ?? [], target);
+  const rows = statDeltas(match.htStats ?? [], target, 'HT', match.sixtyStats ? String(match.sixtyMinute) : match.status);
   const currentMinute = /^\d+$/.test(match.status) ? Number(match.status) : null;
   const title = match.sixtyStats ? `HT → ${match.sixtyMinute}分 SNAPSHOT` : `HT → ${currentMinute ?? match.status} LIVE DELTA`;
   return <div className={`delta-panel ${match.sixtyStats ? 'locked' : ''}`}><div className="delta-title"><b>{title}</b><span>{match.sixtyStats ? '固定済み' : '60分到達待ち'}</span></div><div className="stat-head"><span>HOME ±</span><b>CHANGE</b><span>AWAY ±</span></div>{rows.map((row, index) => <div className="stat-row delta-row" key={`${row.type}-${index}`}><strong>{signed(row.home)}</strong><span>{row.type}</span><strong>{signed(row.away)}</strong></div>)}</div>;
 }
 
 function SnapshotDeltaPanel({ match, snapshot }: { match: LiveMatch; snapshot: ManualSnapshot }) {
-  const rows = statDeltas(snapshot.stats, match.stats);
+  const rows = statDeltas(snapshot.stats, match.stats, snapshot.status, match.status);
   return <div className="snapshot-delta"><div className="delta-title"><b>{formatSnapshotStatus(snapshot.status)} → {formatSnapshotStatus(match.status)} CURRENT DELTA</b><span>取得 {snapshot.capturedAt} JST</span></div><div className="stat-head"><span>HOME ±</span><b>CHANGE</b><span>AWAY ±</span></div>{rows.length ? rows.map((row) => <div className="stat-row delta-row" key={row.key}><strong>{signed(row.home)}</strong><span>{row.type}</span><strong>{signed(row.away)}</strong></div>) : <p className="no-delta">比較可能な数値statsを待っています</p>}</div>;
 }
 
-function statDeltas(baseline: Stat[], target: Stat[]) {
+function statDeltas(baseline: Stat[], target: Stat[], baselineStatus: string, targetStatus: string) {
   const occurrences = new Map<string, number>();
   return target.flatMap((stat) => {
     const occurrence = occurrences.get(stat.type) ?? 0;
     occurrences.set(stat.type, occurrence + 1);
     const before = baseline.filter((item) => item.type === stat.type)[occurrence];
     if (!before) return [];
+    if (isGoalProviderPlaceholderZeroPair(stat.type, stat.home, stat.away, targetStatus) || isGoalProviderPlaceholderZeroPair(before.type, before.home, before.away, baselineStatus)) return [];
     const home = numeric(stat.home), away = numeric(stat.away), baseHome = numeric(before.home), baseAway = numeric(before.away);
     if (home === null || away === null || baseHome === null || baseAway === null) return [];
     return [{ key: `${stat.type}-${occurrence}`, type: occurrence ? `${stat.type} #${occurrence + 1}` : stat.type, home: home - baseHome, away: away - baseAway }];
