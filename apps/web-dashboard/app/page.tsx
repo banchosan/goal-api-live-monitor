@@ -13,14 +13,15 @@ type UpcomingFixture = { id: string; league: string; country: string; home: stri
 type FormCandidate = { kickoffUtc: string; kickoffJst: string; league: string; country: string; fixtureId: string; home:string; away:string; homeTeamId:string; awayTeamId:string; teamId:string; team: string; side: 'home' | 'away'; opponent: string; wins: number; draws: number; last5: { result: string; score: string; opponent: string; fixtureId: string }[] };
 type Stat = { type: string; home: string | number | null; away: string | number | null };
 type ManualSnapshot = { id: string; status: string; capturedAt: string; stats: Stat[] };
-type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; lastReceivedAt?: string; updates: number; ended?: boolean; htStats?: Stat[] | null; sixtyStats?: Stat[] | null; sixtyMinute?: number | null; subscriptionState?: string; subscribedAt?: string | null; snapshots: ManualSnapshot[]; selectedSnapshotId?: string };
+type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; lastReceivedAt?: string; updates: number; ended?: boolean; htStats?: Stat[] | null; subscriptionState?: string; subscribedAt?: string | null; snapshots: ManualSnapshot[]; selectedSnapshotId?: string };
 type LiveSignal = { id:string; fixtureId:string; ruleId:string; ruleVersion:string; signalSide:string|null; triggeredAt:string; detectedMinute:number|null; feature?:Record<string,unknown>|null };
+type DangerousAttacksWindow = { halfTime: { actualMinute:number|null; capturedAt:string|null; home:number|null; away:number|null } | null; cutoff: { targetMinute:65; actualMinute:number|null; capturedAt:string|null; home:number|null; away:number|null } | null };
 type MonitorEvent = { sessionId: string; fixtureId: string; eventType: string; receivedAt: string; status?: string; home?: string; away?: string; homeScore?: string; awayScore?: string; payload: unknown };
 type Bookmark = { fixtureId:string;home:string;away:string;league:string;country:string;kickoffUtc:string;reason:string;relatedTeamName?:string|null;status:'waiting'|'monitoring'|'finished'|'removed';updatedAt:string };
 type MonitorExclusion = { fixtureId:string;home:string;away:string;reason:string;excludedAt:string;updatedAt:string };
 
 export default function Home() {
-  const [viewMode, setViewMode] = useState<'live' | 'upcoming'>('live');
+  const [viewMode, setViewMode] = useState<'live' | 'upcoming' | 'manage'>('live');
   const [fixtures, setFixtures] = useState<Fixture[]>([]);
   const [upcomingFixtures, setUpcomingFixtures] = useState<UpcomingFixture[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
@@ -38,6 +39,7 @@ export default function Home() {
   const [monitorExclusions, setMonitorExclusions] = useState<MonitorExclusion[]>([]);
   const [bookmarkMessage, setBookmarkMessage] = useState('');
   const [liveSignals, setLiveSignals] = useState<Record<string, LiveSignal[]>>({});
+  const [daWindows, setDaWindows] = useState<Record<string, DangerousAttacksWindow>>({});
   const sessionIdRef = useRef('');
   const matchesRef = useRef<Record<string, LiveMatch>>({});
   const hiddenFixtureIdsRef = useRef(new Set<string>());
@@ -186,7 +188,7 @@ export default function Home() {
         sessionIdRef.current = data.sessionId ?? ''; setCollectorRequests(Number(data.goalApiRequests ?? 0));
         setFrameCount((data.fixtures ?? []).reduce((sum: number, fixture: LiveMatch) => sum + Number(fixture.updates ?? 0), 0));
         if (data.fixtures?.length) { const hidden=new Set([...hiddenFixtureIdsRef.current,...excludedFixtureIdsRef.current]); setMatches((current) => Object.fromEntries(visibleCollectorFixtures(data.fixtures as LiveMatch[], hidden).map((fixture) => [fixture.id, { ...fixture, updatedAt: fixture.updatedAt ? new Date(fixture.updatedAt).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' }) : undefined, snapshots: current[fixture.id]?.snapshots ?? [], selectedSnapshotId: current[fixture.id]?.selectedSnapshotId }]))); }
-        if (data.fixtures?.length && Date.now() - lastSignalPollAtRef.current >= 5_000) { lastSignalPollAtRef.current=Date.now(); void fetch(`/api/live-signals?fixtureIds=${encodeURIComponent((data.fixtures as LiveMatch[]).map((fixture)=>fixture.id).join(','))}`,{cache:'no-store'}).then(async(response)=>{if(!response.ok)return;const body=await response.json();if(cancelled)return;const grouped:Record<string,LiveSignal[]>={};for(const signal of body.signals??[])(grouped[signal.providerFixtureId]??=[]).push(signal);setLiveSignals(grouped);}).catch(()=>undefined); }
+        if (data.fixtures?.length && Date.now() - lastSignalPollAtRef.current >= 5_000) { lastSignalPollAtRef.current=Date.now(); const fixtureIds=encodeURIComponent((data.fixtures as LiveMatch[]).map((fixture)=>fixture.id).join(',')); void Promise.all([fetch(`/api/live-signals?fixtureIds=${fixtureIds}`,{cache:'no-store'}),fetch(`/api/live-da-window?fixtureIds=${fixtureIds}`,{cache:'no-store'})]).then(async([signalResponse,windowResponse])=>{if(!signalResponse.ok||!windowResponse.ok)return;const [signalBody,windowBody]=await Promise.all([signalResponse.json(),windowResponse.json()]);if(cancelled)return;const grouped:Record<string,LiveSignal[]>={};for(const signal of signalBody.signals??[])(grouped[signal.providerFixtureId]??=[]).push(signal);setLiveSignals(grouped);const windows:Record<string,DangerousAttacksWindow>={};for(const row of windowBody.windows??[])if(row.window)windows[row.providerFixtureId]=row.window;setDaWindows(windows);}).catch(()=>undefined); }
         if (data.active && data.connectionState === 'live') { setConnection('live'); setMessage(`${data.fixtures.length}試合を独立Collectorで監視中。ブラウザを再読込しても収集は継続します。`); }
         else if (data.active) { setConnection('connecting'); setMessage(data.connectionState === 'reconnect_wait' ? `Socket切断を検知。再接続待機中（試行 ${data.reconnectAttempt}）` : 'CollectorがWebSocketへ接続中…'); }
         else setConnection((value) => value === 'error' ? value : 'idle');
@@ -204,12 +206,11 @@ export default function Home() {
       <div className="health"><span className={`dot ${connection}`} />{connection === 'live' ? 'SOCKET CONNECTED' : connection === 'connecting' ? 'CONNECTING' : connection === 'error' ? 'CONNECTION ERROR' : 'SOCKET OFF'}</div>
       <div className="quota"><span>HTTP USED</span><strong>{restCount + collectorRequests}</strong><small>WS updates {frameCount}</small></div>
     </header>
-    <nav className="view-tabs" aria-label="表示切替"><button className={viewMode === 'live' ? 'active' : ''} onClick={() => setViewMode('live')}>ライブ監視</button><button className={viewMode === 'upcoming' ? 'active' : ''} onClick={() => setViewMode('upcoming')}>今後24時間</button></nav>
-    <BookmarkPanel bookmarks={bookmarks} exclusions={monitorExclusions} matches={matches} message={bookmarkMessage} onRemove={removeBookmark} onRestoreMonitoring={restoreMonitoring} />
-    <section className="commandbar"><div><h1>{viewMode === 'live' ? 'ライブ試合を選んで、リアルタイムで見る。' : 'これから24時間以内に始まる全試合。'}</h1><p>{viewMode === 'live' ? message : upcomingMessage}</p></div><div className="actions">
+    <nav className="view-tabs" aria-label="表示切替"><button className={viewMode === 'live' ? 'active' : ''} onClick={() => setViewMode('live')}>LIVE監視</button><button className={viewMode === 'upcoming' ? 'active' : ''} onClick={() => setViewMode('upcoming')}>24時間分析</button><button className={viewMode === 'manage' ? 'active' : ''} onClick={() => setViewMode('manage')}>管理</button></nav>
+    {viewMode !== 'manage' && <section className="commandbar"><div><h1>{viewMode === 'live' ? 'ライブ試合を選んで、リアルタイムで見る。' : 'これから24時間以内に始まる全試合。'}</h1><p>{viewMode === 'live' ? message : upcomingMessage}</p></div><div className="actions">
       {viewMode === 'live' ? <><button className="secondary" onClick={loadFixtures} disabled={loading}>{loading ? '取得中…' : fixtures.length ? '一覧を更新' : 'ライブ試合を取得'}</button>
       {connection === 'live' ? <><button className="primary" onClick={addSelectedMatches} disabled={!addableIds.length || !availableSlots}>選択から{addableIds.length}試合を追加</button><button className="danger" onClick={stopMonitoring}>監視を停止</button></> : connection === 'connecting' ? <button className="danger" onClick={stopMonitoring}>接続を中止</button> : <button className="primary" onClick={startMonitoring} disabled={!selected.length}>選択した{selected.length}試合を監視</button>}</> : <button className="primary" onClick={loadUpcomingFixtures} disabled={upcomingLoading}>{upcomingLoading ? '取得中…' : upcomingFixtures.length ? '24時間一覧を更新' : '今後24時間を取得'}</button>}
-    </div></section>
+    </div></section>}
     {viewMode === 'live' ? <div className="workspace">
       <aside className="match-picker"><div className="picker-head"><div><span className="eyebrow">LIVE MATCHES</span><strong>{fixtures.length}</strong></div><span className="selection-count">{selected.length}/25 選択</span></div>
         <input aria-label="試合検索" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="チーム・リーグを検索" />
@@ -218,9 +219,9 @@ export default function Home() {
         </div>
       </aside>
       <section className="score-stage">{!Object.keys(matches).length && <div className="hero-empty"><div className="pulse-rings"><span /><span /><b>⚽</b></div><h2>試合を選択してください</h2><p>左のライブ一覧から最大25試合を選び、1本のSocketで同時監視できます。</p><div className="flow"><span>LIVE LIST<small>通常2 REST</small></span><i>→</i><span>SELECT<small>最大25試合</small></span><i>→</i><span>WEBSOCKET<small>更新消費 0</small></span></div></div>}
-        <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} signals={liveSignals[m.id]??[]} onCapture={() => captureSnapshot(m.id)} onSelectSnapshot={(snapshotId) => selectSnapshot(m.id, snapshotId)} onRemove={() => m.ended ? void hideFinishedFixture(m.id) : void removeFromMonitoring(m.id)} onRefresh={() => void refreshSubscription(m.id)} />)}</div>
+        <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} signals={liveSignals[m.id]??[]} daWindow={daWindows[m.id]??null} onCapture={() => captureSnapshot(m.id)} onSelectSnapshot={(snapshotId) => selectSnapshot(m.id, snapshotId)} onRemove={() => m.ended ? void hideFinishedFixture(m.id) : void removeFromMonitoring(m.id)} onRefresh={() => void refreshSubscription(m.id)} />)}</div>
       </section>
-    </div> : <UpcomingBoard fixtures={upcomingFixtures} loading={upcomingLoading} onRest={(count) => setRestCount((value) => value + count)} bookmarks={bookmarks} onBookmark={bookmarkFixture} />}
+    </div> : viewMode === 'upcoming' ? <UpcomingBoard fixtures={upcomingFixtures} loading={upcomingLoading} onRest={(count) => setRestCount((value) => value + count)} bookmarks={bookmarks} onBookmark={bookmarkFixture} /> : <ManagementBoard bookmarks={bookmarks} exclusions={monitorExclusions} matches={matches} message={bookmarkMessage} onRemove={removeBookmark} onRestoreMonitoring={restoreMonitoring} />}
   </main>;
 }
 
@@ -292,6 +293,10 @@ function BookmarkPanel({bookmarks,exclusions,matches,message,onRemove,onRestoreM
   return <section className="bookmark-panel"><div className="bookmark-heading"><div><span>BOOKMARKS</span><strong>{bookmarks.length}</strong></div><small>{message||'kickoff 3分前から自動Socket監視'}</small></div><div className="bookmark-list">{bookmarks.length?bookmarks.map(b=><article key={b.fixtureId}><div><b>{b.home} vs {b.away}</b><small>{b.country} · {b.league}</small></div><time>{new Date(b.kickoffUtc).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'})}</time><span className={`bookmark-status ${excludedIds.has(b.fixtureId)?'excluded':b.status}`}>{excludedIds.has(b.fixtureId)?'監視除外中':matches[b.fixtureId]?.subscriptionState??b.status}</span>{b.relatedTeamName&&<em>好調: {b.relatedTeamName}</em>}{excludedIds.has(b.fixtureId)&&<button onClick={()=>void onRestoreMonitoring(b.fixtureId)}>監視に戻す</button>}<button onClick={()=>void onRemove(b.fixtureId)}>Bookmarkを外す</button></article>):<p>Bookmarkはまだありません</p>}</div>{exclusions.length>0&&<div className="monitor-exclusion-list"><span>監視除外リスト（Mac復帰・再読込後も維持）</span>{exclusions.map(row=><button key={row.fixtureId} onClick={()=>void onRestoreMonitoring(row.fixtureId)}>{row.home||row.fixtureId} {row.away?`vs ${row.away}`:''} · 監視に戻す</button>)}</div>}</section>;
 }
 
+function ManagementBoard(props: { bookmarks:Bookmark[]; exclusions:MonitorExclusion[]; matches:Record<string,LiveMatch>; message:string; onRemove:(id:string)=>Promise<void>; onRestoreMonitoring:(id:string)=>Promise<void> }) {
+  return <section className="management-stage"><div className="management-intro"><span>MANAGEMENT</span><h1>Bookmark・監視対象外・保存済みデータ</h1><p>LIVE監視中に常時見る必要のない管理項目をここへまとめています。履歴データは削除されません。</p></div><BookmarkPanel {...props} /><div className="management-links"><a href="/odds"><b>オッズ一覧</b><small>保存したオッズ取得履歴</small></a><a href="/analysis"><b>分析データ</b><small>AI分析用JSON・結果データ</small></a><a href="/form-history"><b>調子分析履歴</b><small>過去の直近5試合分析</small></a></div></section>;
+}
+
 function isSelectedLeague(fixture: UpcomingFixture) {
   const country = normalize(fixture.country);
   const league = normalize(fixture.league).replace(/\s+-\s+.*$/, '');
@@ -344,7 +349,7 @@ function isSelectedLeague(fixture: UpcomingFixture) {
 
 function normalize(value: string) { return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase(); }
 
-function MatchCard({ match, signals, onCapture, onSelectSnapshot, onRemove, onRefresh }: { match: LiveMatch; signals: LiveSignal[]; onCapture: () => void; onSelectSnapshot: (id: string) => void; onRemove: () => void; onRefresh: () => void }) {
+function MatchCard({ match, signals, daWindow, onCapture, onSelectSnapshot, onRemove, onRefresh }: { match: LiveMatch; signals: LiveSignal[]; daWindow: DangerousAttacksWindow | null; onCapture: () => void; onSelectSnapshot: (id: string) => void; onRemove: () => void; onRefresh: () => void }) {
   const status = displayMatchMinute(match.status);
   const selectedSnapshot = match.snapshots.find((snapshot) => snapshot.id === match.selectedSnapshotId);
   const lastReceivedMs = Date.parse(match.lastReceivedAt ?? '');
@@ -353,30 +358,26 @@ function MatchCard({ match, signals, onCapture, onSelectSnapshot, onRemove, onRe
   const subscribedMs = Date.parse(match.subscribedAt ?? '');
   const providerSilent = waitingForProvider && Number.isFinite(subscribedMs) && Date.now() - subscribedMs >= 15_000;
   return <article className="score-card"><div className="league-line"><span>{match.country} · {match.league}</span><span className="fixture-controls"><b>{status}</b>{!match.ended && <button className="refresh-fixture" onClick={onRefresh}>再subscribe</button>}<button onClick={onRemove}>{match.ended ? '一覧から外す' : '監視から外す'}</button></span></div><div className="scoreline"><div><span className="crest home">{match.home.slice(0, 2).toUpperCase()}</span><strong>{match.home}</strong></div><p><b>{match.homeScore}</b><i>–</i><b>{match.awayScore}</b></p><div><span className="crest away">{match.away.slice(0, 2).toUpperCase()}</span><strong>{match.away}</strong></div></div><div className={`update-line ${stale ? 'stale' : ''}`}><span className="live-pill">● {match.ended ? 'FINISHED' : stale ? 'UPDATE STALE' : waitingForProvider ? 'SUBSCRIBED' : 'LIVE'}</span><span>{match.updatedAt ? `Socket更新 ${match.updatedAt} JST · #${match.updates}${stale ? ' · provider更新停止を検知' : ''}` : waitingForProvider ? 'subscribe成功・最初のSocket更新（分数・stats）待ち' : 'subscribe応答待ち'}</span></div>
-    {match.htStats && <DeltaPanel match={match} />}
-    <DangerousAttacksSignalPanel match={match} signals={signals} />
+    <DangerousAttacksSignalPanel match={match} signals={signals} daWindow={daWindow} />
     <div className="snapshot-panel"><div className="snapshot-actions"><button onClick={onCapture} disabled={!match.stats.length}>現在値をスナップ（REST 0）</button><span>{match.snapshots.length ? `${match.snapshots.length}件保存` : '好きな時点を保存できます'}</span></div>{match.snapshots.length > 0 && <div className="snapshot-tabs">{match.snapshots.map((snapshot) => <button className={snapshot.id === match.selectedSnapshotId ? 'active' : ''} onClick={() => onSelectSnapshot(snapshot.id)} key={snapshot.id}>{formatSnapshotStatus(snapshot.status)} <small>{snapshot.capturedAt}</small></button>)}</div>}</div>
     {selectedSnapshot && <SnapshotDeltaPanel match={match} snapshot={selectedSnapshot} />}
     {match.stats.length ? <div className="stats"><div className="stat-head"><span>HOME</span><b>CURRENT STATISTICS</b><span>AWAY</span></div>{match.stats.map((s, i) => { const unavailable = isGoalProviderPlaceholderZeroPair(s.type, s.home, s.away, match.status); return <div className="stat-row" key={`${s.type}-${i}`}><strong>{unavailable ? '—' : s.home ?? 'N/A'}</strong><span>{s.type}{unavailable ? '（GOAL API未提供）' : ''}</span><strong>{unavailable ? '—' : s.away ?? 'N/A'}</strong></div>; })}</div> : providerSilent ? <div className="waiting"><p>Socket接続・subscribeは成功しましたが、GOAL APIからmatch_updateが届いていません。分数とstatsはprovider未配信です。</p></div> : <div className="waiting"><span /><p>WebSocketの最初のmatch_updateを待っています</p></div>}
   </article>;
 }
 
-function DangerousAttacksSignalPanel({ match, signals }: { match: LiveMatch; signals: LiveSignal[] }) {
-  const minute=/^\d+$/.test(match.status)?Number(match.status):null;
-  const htHome=statValue(match.htStats??[],'Dangerous Attacks','home'); const htAway=statValue(match.htStats??[],'Dangerous Attacks','away');
-  const currentHome=statValue(match.stats,'Dangerous Attacks','home'); const currentAway=statValue(match.stats,'Dangerous Attacks','away');
+function DangerousAttacksSignalPanel({ match, signals, daWindow }: { match: LiveMatch; signals: LiveSignal[]; daWindow: DangerousAttacksWindow | null }) {
+  const minute=parseElapsedMinute(match.status);
+  // The checkpoint API is authoritative after 65'. Before it is available,
+  // an in-memory current value is safe only while the match itself is <=65'.
+  const inWindow=minute !== null && minute <= 65;
+  const htHome=daWindow?.halfTime?.home ?? statValue(match.htStats??[],'Dangerous Attacks','home'); const htAway=daWindow?.halfTime?.away ?? statValue(match.htStats??[],'Dangerous Attacks','away');
+  const currentHome=daWindow?.cutoff?.home ?? (inWindow ? statValue(match.stats,'Dangerous Attacks','home') : null); const currentAway=daWindow?.cutoff?.away ?? (inWindow ? statValue(match.stats,'Dangerous Attacks','away') : null);
+  const checkpointMinute=daWindow?.cutoff?.actualMinute ?? (inWindow ? minute : null);
   const homeIncrease=htHome===null||currentHome===null?null:currentHome-htHome; const awayIncrease=htAway===null||currentAway===null?null:currentAway-htAway;
   const homeFired=signals.some((signal)=>signal.ruleId==='dangerous_attacks_ht_increase'&&signal.ruleVersion==='v1'&&signal.signalSide==='HOME');
   const awayFired=signals.some((signal)=>signal.ruleId==='dangerous_attacks_ht_increase'&&signal.ruleVersion==='v1'&&signal.signalSide==='AWAY');
-  return <div className="snapshot-delta"><div className="delta-title"><b>HT → 65' DANGEROUS ATTACKS SIGNAL</b><span>threshold +15</span></div><div className="stat-head"><span>HOME</span><b>{minute===null?'minute待ち':`${minute}'`}</b><span>AWAY</span></div><div className="stat-row"><strong>{htHome===null?'—':htHome}</strong><span>HT DA</span><strong>{htAway===null?'—':htAway}</strong></div><div className="stat-row"><strong>{currentHome===null?'—':currentHome}</strong><span>CURRENT DA</span><strong>{currentAway===null?'—':currentAway}</strong></div><div className="stat-row delta-row"><strong>{homeIncrease===null?'—':signed(homeIncrease)}</strong><span>{homeFired?'HOME FIRED':'increase / +15'}</span><strong>{awayFired?'AWAY FIRED':awayIncrease===null?'—':signed(awayIncrease)}</strong></div><small>{minute!==null&&minute>65?'65分を超えたため新規発火なし':!match.htStats?'HT baseline待ち':htHome===null||htAway===null?'DA未提供のため判定保留':`HOME ${homeFired?'発火済み':'未発火'} / AWAY ${awayFired?'発火済み':'未発火'}`}</small></div>;
-}
-
-function DeltaPanel({ match }: { match: LiveMatch }) {
-  const target = match.sixtyStats ?? match.stats;
-  const rows = statDeltas(match.htStats ?? [], target, 'HT', match.sixtyStats ? String(match.sixtyMinute) : match.status);
-  const currentMinute = /^\d+$/.test(match.status) ? Number(match.status) : null;
-  const title = match.sixtyStats ? `HT → ${match.sixtyMinute}分 SNAPSHOT` : `HT → ${currentMinute ?? match.status} LIVE DELTA`;
-  return <div className={`delta-panel ${match.sixtyStats ? 'locked' : ''}`}><div className="delta-title"><b>{title}</b><span>{match.sixtyStats ? '固定済み' : '60分到達待ち'}</span></div><div className="stat-head"><span>HOME ±</span><b>CHANGE</b><span>AWAY ±</span></div>{rows.map((row, index) => <div className="stat-row delta-row" key={`${row.type}-${index}`}><strong>{signed(row.home)}</strong><span>{row.type}</span><strong>{signed(row.away)}</strong></div>)}</div>;
+  const homeHot=homeFired || (homeIncrease !== null && homeIncrease >= 15); const awayHot=awayFired || (awayIncrease !== null && awayIncrease >= 15);
+  return <div className="snapshot-delta da-signal-panel"><div className="delta-title"><b>HT → 65' DANGEROUS ATTACKS SIGNAL</b><span>threshold +15</span></div><div className="stat-head"><span>HOME</span><b>{checkpointMinute===null?'checkpoint待ち':`${checkpointMinute}'まで`}</b><span>AWAY</span></div><div className="stat-row"><strong>{htHome===null?'—':htHome}</strong><span>HT DA</span><strong>{htAway===null?'—':htAway}</strong></div><div className="stat-row"><strong>{currentHome===null?'—':currentHome}</strong><span>DA（65分まで）</span><strong>{currentAway===null?'—':currentAway}</strong></div><div className="stat-row delta-row"><strong className={homeHot?'signal-fired':''}>{homeIncrease===null?'—':`${homeHot?'🔥 ':''}${signed(homeIncrease)}`}</strong><span>{homeHot?'15到達・発火':'increase / +15'}</span><strong className={awayHot?'signal-fired':''}>{awayIncrease===null?'—':`${awayHot?'🔥 ':''}${signed(awayIncrease)}`}</strong></div><small>{minute!==null&&minute>65?'65分で評価を停止（表示値は65分以下の最終Socket snapshot）':!match.htStats?'HT baseline待ち':htHome===null||htAway===null?'DA未提供のため判定保留':`HOME ${homeHot?'🔥 発火':'未発火'} / AWAY ${awayHot?'🔥 発火':'未発火'}`}</small></div>;
 }
 
 function SnapshotDeltaPanel({ match, snapshot }: { match: LiveMatch; snapshot: ManualSnapshot }) {
@@ -397,6 +398,8 @@ function statDeltas(baseline: Stat[], target: Stat[], baselineStatus: string, ta
     return [{ key: `${stat.type}-${occurrence}`, type: occurrence ? `${stat.type} #${occurrence + 1}` : stat.type, home: home - baseHome, away: away - baseAway }];
   });
 }
+
+function parseElapsedMinute(status: string) { const match = /^(\d+)/.exec(String(status).trim()); return match ? Number(match[1]) : null; }
 
 function formatSnapshotStatus(status: string) { return displayMatchMinute(status); }
 
