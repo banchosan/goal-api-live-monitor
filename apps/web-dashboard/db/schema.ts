@@ -274,6 +274,9 @@ export const canonicalSchema = [
     team_id TEXT REFERENCES core_teams(id),
     signal_type TEXT NOT NULL,
     signal_version TEXT NOT NULL,
+    -- Per-rule dedupe discriminator.  DA v1 uses HOME / AWAY; nullable keeps
+    -- any historical rows readable while new projections always set it.
+    signal_key TEXT,
     triggered_at TEXT NOT NULL,
     elapsed_minute INTEGER,
     rule_parameters_json TEXT NOT NULL,
@@ -292,6 +295,7 @@ export const canonicalSchema = [
     detail_json TEXT NOT NULL
   )`,
   'CREATE INDEX IF NOT EXISTS live_signals_fixture_time_idx ON live_signals (fixture_id, triggered_at)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS live_signals_rule_side_dedupe_idx ON live_signals (fixture_id, signal_type, signal_version, signal_key) WHERE signal_key IS NOT NULL',
 ] as const;
 
 // Compatibility export for older route modules.  Keeping it empty prevents a

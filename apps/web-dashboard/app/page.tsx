@@ -14,6 +14,7 @@ type FormCandidate = { kickoffUtc: string; kickoffJst: string; league: string; c
 type Stat = { type: string; home: string | number | null; away: string | number | null };
 type ManualSnapshot = { id: string; status: string; capturedAt: string; stats: Stat[] };
 type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; lastReceivedAt?: string; updates: number; ended?: boolean; htStats?: Stat[] | null; sixtyStats?: Stat[] | null; sixtyMinute?: number | null; subscriptionState?: string; subscribedAt?: string | null; snapshots: ManualSnapshot[]; selectedSnapshotId?: string };
+type LiveSignal = { id:string; fixtureId:string; ruleId:string; ruleVersion:string; signalSide:string|null; triggeredAt:string; detectedMinute:number|null; feature?:Record<string,unknown>|null };
 type MonitorEvent = { sessionId: string; fixtureId: string; eventType: string; receivedAt: string; status?: string; home?: string; away?: string; homeScore?: string; awayScore?: string; payload: unknown };
 type Bookmark = { fixtureId:string;home:string;away:string;league:string;country:string;kickoffUtc:string;reason:string;relatedTeamName?:string|null;status:'waiting'|'monitoring'|'finished'|'removed';updatedAt:string };
 type MonitorExclusion = { fixtureId:string;home:string;away:string;reason:string;excludedAt:string;updatedAt:string };
@@ -36,10 +37,12 @@ export default function Home() {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [monitorExclusions, setMonitorExclusions] = useState<MonitorExclusion[]>([]);
   const [bookmarkMessage, setBookmarkMessage] = useState('');
+  const [liveSignals, setLiveSignals] = useState<Record<string, LiveSignal[]>>({});
   const sessionIdRef = useRef('');
   const matchesRef = useRef<Record<string, LiveMatch>>({});
   const hiddenFixtureIdsRef = useRef(new Set<string>());
   const excludedFixtureIdsRef = useRef(new Set<string>());
+  const lastSignalPollAtRef = useRef(0);
   const visible = useMemo(() => fixtures.filter((f) => `${f.home} ${f.away} ${f.league} ${f.country}`.toLowerCase().includes(query.toLowerCase())), [fixtures, query]);
   const additionalIds = selected.filter((id) => !matches[id] && !monitorExclusions.some((row) => row.fixtureId === id));
   const availableSlots = Math.max(0, 25 - Object.keys(matches).length);
@@ -183,6 +186,7 @@ export default function Home() {
         sessionIdRef.current = data.sessionId ?? ''; setCollectorRequests(Number(data.goalApiRequests ?? 0));
         setFrameCount((data.fixtures ?? []).reduce((sum: number, fixture: LiveMatch) => sum + Number(fixture.updates ?? 0), 0));
         if (data.fixtures?.length) { const hidden=new Set([...hiddenFixtureIdsRef.current,...excludedFixtureIdsRef.current]); setMatches((current) => Object.fromEntries(visibleCollectorFixtures(data.fixtures as LiveMatch[], hidden).map((fixture) => [fixture.id, { ...fixture, updatedAt: fixture.updatedAt ? new Date(fixture.updatedAt).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' }) : undefined, snapshots: current[fixture.id]?.snapshots ?? [], selectedSnapshotId: current[fixture.id]?.selectedSnapshotId }]))); }
+        if (data.fixtures?.length && Date.now() - lastSignalPollAtRef.current >= 5_000) { lastSignalPollAtRef.current=Date.now(); void fetch(`/api/live-signals?fixtureIds=${encodeURIComponent((data.fixtures as LiveMatch[]).map((fixture)=>fixture.id).join(','))}`,{cache:'no-store'}).then(async(response)=>{if(!response.ok)return;const body=await response.json();if(cancelled)return;const grouped:Record<string,LiveSignal[]>={};for(const signal of body.signals??[])(grouped[signal.providerFixtureId]??=[]).push(signal);setLiveSignals(grouped);}).catch(()=>undefined); }
         if (data.active && data.connectionState === 'live') { setConnection('live'); setMessage(`${data.fixtures.length}試合を独立Collectorで監視中。ブラウザを再読込しても収集は継続します。`); }
         else if (data.active) { setConnection('connecting'); setMessage(data.connectionState === 'reconnect_wait' ? `Socket切断を検知。再接続待機中（試行 ${data.reconnectAttempt}）` : 'CollectorがWebSocketへ接続中…'); }
         else setConnection((value) => value === 'error' ? value : 'idle');
@@ -214,7 +218,7 @@ export default function Home() {
         </div>
       </aside>
       <section className="score-stage">{!Object.keys(matches).length && <div className="hero-empty"><div className="pulse-rings"><span /><span /><b>⚽</b></div><h2>試合を選択してください</h2><p>左のライブ一覧から最大25試合を選び、1本のSocketで同時監視できます。</p><div className="flow"><span>LIVE LIST<small>通常2 REST</small></span><i>→</i><span>SELECT<small>最大25試合</small></span><i>→</i><span>WEBSOCKET<small>更新消費 0</small></span></div></div>}
-        <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} onCapture={() => captureSnapshot(m.id)} onSelectSnapshot={(snapshotId) => selectSnapshot(m.id, snapshotId)} onRemove={() => m.ended ? void hideFinishedFixture(m.id) : void removeFromMonitoring(m.id)} onRefresh={() => void refreshSubscription(m.id)} />)}</div>
+        <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} signals={liveSignals[m.id]??[]} onCapture={() => captureSnapshot(m.id)} onSelectSnapshot={(snapshotId) => selectSnapshot(m.id, snapshotId)} onRemove={() => m.ended ? void hideFinishedFixture(m.id) : void removeFromMonitoring(m.id)} onRefresh={() => void refreshSubscription(m.id)} />)}</div>
       </section>
     </div> : <UpcomingBoard fixtures={upcomingFixtures} loading={upcomingLoading} onRest={(count) => setRestCount((value) => value + count)} bookmarks={bookmarks} onBookmark={bookmarkFixture} />}
   </main>;
@@ -340,7 +344,7 @@ function isSelectedLeague(fixture: UpcomingFixture) {
 
 function normalize(value: string) { return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase(); }
 
-function MatchCard({ match, onCapture, onSelectSnapshot, onRemove, onRefresh }: { match: LiveMatch; onCapture: () => void; onSelectSnapshot: (id: string) => void; onRemove: () => void; onRefresh: () => void }) {
+function MatchCard({ match, signals, onCapture, onSelectSnapshot, onRemove, onRefresh }: { match: LiveMatch; signals: LiveSignal[]; onCapture: () => void; onSelectSnapshot: (id: string) => void; onRemove: () => void; onRefresh: () => void }) {
   const status = displayMatchMinute(match.status);
   const selectedSnapshot = match.snapshots.find((snapshot) => snapshot.id === match.selectedSnapshotId);
   const lastReceivedMs = Date.parse(match.lastReceivedAt ?? '');
@@ -350,10 +354,21 @@ function MatchCard({ match, onCapture, onSelectSnapshot, onRemove, onRefresh }: 
   const providerSilent = waitingForProvider && Number.isFinite(subscribedMs) && Date.now() - subscribedMs >= 15_000;
   return <article className="score-card"><div className="league-line"><span>{match.country} · {match.league}</span><span className="fixture-controls"><b>{status}</b>{!match.ended && <button className="refresh-fixture" onClick={onRefresh}>再subscribe</button>}<button onClick={onRemove}>{match.ended ? '一覧から外す' : '監視から外す'}</button></span></div><div className="scoreline"><div><span className="crest home">{match.home.slice(0, 2).toUpperCase()}</span><strong>{match.home}</strong></div><p><b>{match.homeScore}</b><i>–</i><b>{match.awayScore}</b></p><div><span className="crest away">{match.away.slice(0, 2).toUpperCase()}</span><strong>{match.away}</strong></div></div><div className={`update-line ${stale ? 'stale' : ''}`}><span className="live-pill">● {match.ended ? 'FINISHED' : stale ? 'UPDATE STALE' : waitingForProvider ? 'SUBSCRIBED' : 'LIVE'}</span><span>{match.updatedAt ? `Socket更新 ${match.updatedAt} JST · #${match.updates}${stale ? ' · provider更新停止を検知' : ''}` : waitingForProvider ? 'subscribe成功・最初のSocket更新（分数・stats）待ち' : 'subscribe応答待ち'}</span></div>
     {match.htStats && <DeltaPanel match={match} />}
+    <DangerousAttacksSignalPanel match={match} signals={signals} />
     <div className="snapshot-panel"><div className="snapshot-actions"><button onClick={onCapture} disabled={!match.stats.length}>現在値をスナップ（REST 0）</button><span>{match.snapshots.length ? `${match.snapshots.length}件保存` : '好きな時点を保存できます'}</span></div>{match.snapshots.length > 0 && <div className="snapshot-tabs">{match.snapshots.map((snapshot) => <button className={snapshot.id === match.selectedSnapshotId ? 'active' : ''} onClick={() => onSelectSnapshot(snapshot.id)} key={snapshot.id}>{formatSnapshotStatus(snapshot.status)} <small>{snapshot.capturedAt}</small></button>)}</div>}</div>
     {selectedSnapshot && <SnapshotDeltaPanel match={match} snapshot={selectedSnapshot} />}
     {match.stats.length ? <div className="stats"><div className="stat-head"><span>HOME</span><b>CURRENT STATISTICS</b><span>AWAY</span></div>{match.stats.map((s, i) => { const unavailable = isGoalProviderPlaceholderZeroPair(s.type, s.home, s.away, match.status); return <div className="stat-row" key={`${s.type}-${i}`}><strong>{unavailable ? '—' : s.home ?? 'N/A'}</strong><span>{s.type}{unavailable ? '（GOAL API未提供）' : ''}</span><strong>{unavailable ? '—' : s.away ?? 'N/A'}</strong></div>; })}</div> : providerSilent ? <div className="waiting"><p>Socket接続・subscribeは成功しましたが、GOAL APIからmatch_updateが届いていません。分数とstatsはprovider未配信です。</p></div> : <div className="waiting"><span /><p>WebSocketの最初のmatch_updateを待っています</p></div>}
   </article>;
+}
+
+function DangerousAttacksSignalPanel({ match, signals }: { match: LiveMatch; signals: LiveSignal[] }) {
+  const minute=/^\d+$/.test(match.status)?Number(match.status):null;
+  const htHome=statValue(match.htStats??[],'Dangerous Attacks','home'); const htAway=statValue(match.htStats??[],'Dangerous Attacks','away');
+  const currentHome=statValue(match.stats,'Dangerous Attacks','home'); const currentAway=statValue(match.stats,'Dangerous Attacks','away');
+  const homeIncrease=htHome===null||currentHome===null?null:currentHome-htHome; const awayIncrease=htAway===null||currentAway===null?null:currentAway-htAway;
+  const homeFired=signals.some((signal)=>signal.ruleId==='dangerous_attacks_ht_increase'&&signal.ruleVersion==='v1'&&signal.signalSide==='HOME');
+  const awayFired=signals.some((signal)=>signal.ruleId==='dangerous_attacks_ht_increase'&&signal.ruleVersion==='v1'&&signal.signalSide==='AWAY');
+  return <div className="snapshot-delta"><div className="delta-title"><b>HT → 65' DANGEROUS ATTACKS SIGNAL</b><span>threshold +15</span></div><div className="stat-head"><span>HOME</span><b>{minute===null?'minute待ち':`${minute}'`}</b><span>AWAY</span></div><div className="stat-row"><strong>{htHome===null?'—':htHome}</strong><span>HT DA</span><strong>{htAway===null?'—':htAway}</strong></div><div className="stat-row"><strong>{currentHome===null?'—':currentHome}</strong><span>CURRENT DA</span><strong>{currentAway===null?'—':currentAway}</strong></div><div className="stat-row delta-row"><strong>{homeIncrease===null?'—':signed(homeIncrease)}</strong><span>{homeFired?'HOME FIRED':'increase / +15'}</span><strong>{awayFired?'AWAY FIRED':awayIncrease===null?'—':signed(awayIncrease)}</strong></div><small>{minute!==null&&minute>65?'65分を超えたため新規発火なし':!match.htStats?'HT baseline待ち':htHome===null||htAway===null?'DA未提供のため判定保留':`HOME ${homeFired?'発火済み':'未発火'} / AWAY ${awayFired?'発火済み':'未発火'}`}</small></div>;
 }
 
 function DeltaPanel({ match }: { match: LiveMatch }) {
@@ -395,4 +410,5 @@ function persistEvents(events: MonitorEvent[]) {
 }
 
 function numeric(value: string | number | null) { const found = String(value ?? '').match(/-?\d+(?:\.\d+)?/); return found ? Number(found[0]) : null; }
+function statValue(stats: Stat[], type: string, side: 'home'|'away') { const stat=stats.find((row)=>row.type.trim().toLowerCase()===type.toLowerCase()); return stat?numeric(stat[side]):null; }
 function signed(value: number) { return value > 0 ? `+${value}` : String(value); }

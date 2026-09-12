@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 SCHEMA=ROOT/'apps/web-dashboard/db/schema.ts'
 INTERNAL={'sqlite_sequence','d1_migrations','_cf_METADATA'}
-STAMP='0005_live_snapshot_projection.sql'
+STAMP='0006_live_da_signal.sql'
 LIVE_SNAPSHOT_PROJECTION_COLUMNS={
  'provider','provider_fixture_id','provider_event_key','added_time','match_status',
  'attacks_home','attacks_away','yellow_cards_home','yellow_cards_away','red_cards_home','red_cards_away',
@@ -19,7 +19,7 @@ LIVE_SNAPSHOT_PROJECTION_COLUMNS={
 }
 
 def stmts():
- text=SCHEMA.read_text(); a=re.findall(r'`([^`]+)`',text)+re.findall(r"'(CREATE INDEX[^']+)'",text)
+ text=SCHEMA.read_text(); a=re.findall(r'`([^`]+)`',text)+re.findall(r"'(CREATE (?:UNIQUE )?INDEX[^']+)'",text)
  return [x.strip() for x in a if x.strip().upper().startswith('CREATE')]
 
 def create(c):
@@ -109,8 +109,12 @@ def reconcile(c):
  current=set(snapshot_columns(c,'live_snapshots'))
  if LIVE_SNAPSHOT_PROJECTION_COLUMNS-current:return rebuild_live_snapshots(c,'live_snapshots__legacy','modern')
  return False
+def reconcile_live_signals(c):
+ names={x[1] for x in c.execute('PRAGMA table_info(live_signals)')}
+ if 'signal_key' not in names:c.execute('ALTER TABLE live_signals ADD COLUMN signal_key TEXT')
+ c.execute('CREATE UNIQUE INDEX IF NOT EXISTS live_signals_rule_side_dedupe_idx ON live_signals (fixture_id, signal_type, signal_version, signal_key) WHERE signal_key IS NOT NULL')
 def adopt(path):
- c=sqlite3.connect(path);before=fp(c);rebuilt=reconcile(c)
+ c=sqlite3.connect(path);before=fp(c);rebuilt=reconcile(c);reconcile_live_signals(c)
  c.execute('CREATE TABLE IF NOT EXISTS d1_migrations(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL UNIQUE,applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)');c.execute('INSERT OR IGNORE INTO d1_migrations(name) VALUES(?)',(STAMP,));c.commit()
  problems=diff(model(c),expected())
  if problems:raise RuntimeError('ADOPTION_SCHEMA_MISMATCH\n'+'\n'.join(problems))

@@ -64,13 +64,16 @@ function numberOrNull(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function parseStatus(value: unknown) {
+function parseStatus(value: unknown, clock: unknown = null) {
   const matchStatus = typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
+  const clockRecord = record(clock);
+  const elapsedFromClock = numberOrNull(clockRecord.elapsed);
+  const extraFromClock = numberOrNull(clockRecord.extra);
   const match = /^(\d+)(?:\s*\+\s*(\d+))?$/.exec(matchStatus);
   return {
     matchStatus: matchStatus || null,
-    elapsedMinute: match ? Number(match[1]) : null,
-    addedTime: match?.[2] ? Number(match[2]) : null,
+    elapsedMinute: elapsedFromClock ?? (match ? Number(match[1]) : null),
+    addedTime: extraFromClock ?? (match?.[2] ? Number(match[2]) : null),
   };
 }
 
@@ -94,7 +97,7 @@ export function normalizeGoalLiveSnapshot(event: MonitorMatchUpdate, coreFixture
   const message = record(event.payload);
   const data = record(message.data ?? message);
   const statistics = Array.isArray(data.statistics) ? data.statistics as LiveStatistic[] : [];
-  const status = parseStatus(data.match_status);
+  const status = parseStatus(data.match_status, data.clock);
   const providerTimestamp = event.providerTimestamp === undefined || event.providerTimestamp === null || event.providerTimestamp === ''
     ? null : String(event.providerTimestamp);
   const providerEventKey = event.payloadHash?.trim() || `${providerTimestamp ?? 'no-provider-timestamp'}:${event.clientEventId}`;
@@ -120,4 +123,3 @@ export function normalizeGoalLiveSnapshot(event: MonitorMatchUpdate, coreFixture
   };
 }
 import { isGoalProviderPlaceholderZeroPair } from './live-stat-availability.ts';
-
