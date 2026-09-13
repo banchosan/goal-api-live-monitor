@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { ensureMonitorSchema } from '@/db/monitor';
 import { normalizeGoalLiveSnapshot } from '@/lib/goal-live-normalizer';
-import { evaluateDangerousAttacksHtIncrease, type LiveSignalSnapshot } from '@/lib/dangerous-attacks-signal';
+import { evaluateDangerousAttacksHtIncrease, evaluateDangerousAttacksKickoffIncrease, type LiveSignalSnapshot } from '@/lib/dangerous-attacks-signal';
 
 export const dynamic = 'force-dynamic';
 
@@ -148,15 +148,27 @@ async function persistDangerousAttackSignals(db: D1Database, snapshots: Projecte
       AND upper(replace(replace(match_status,'_',' '),'-',' ')) IN ('HT','HALF TIME')
       AND dangerous_attacks_home IS NOT NULL AND dangerous_attacks_away IS NOT NULL
       ORDER BY captured_at DESC,id DESC LIMIT 1`).bind(current.fixtureId, current.provider, current.providerFixtureId, projected.sessionId, current.capturedAt).first<LiveSignalSnapshot>();
-    const evaluation = evaluateDangerousAttacksHtIncrease({ baseline: baselineRow ?? null, current, identityResolved: true });
-    if (evaluation.kind === 'not_applicable') { summary.skipped += 1; summary.reasons[evaluation.reason] = (summary.reasons[evaluation.reason] ?? 0) + 1; continue; }
-    if (evaluation.kind === 'quality_skip') { summary.qualitySkipped += 1; summary.reasons[evaluation.reason] = (summary.reasons[evaluation.reason] ?? 0) + 1; continue; }
-    for (const signal of evaluation.signals) statements.push(db.prepare(`INSERT OR IGNORE INTO live_signals
+    const kickoffBaselineRow = await db.prepare(`SELECT fixture_id AS fixtureId,provider,provider_fixture_id AS providerFixtureId,
+      source_client_event_id AS sourceClientEventId,provider_event_key AS providerEventKey,captured_at AS capturedAt,
+      elapsed_minute AS elapsedMinute,added_time AS addedTime,match_status AS matchStatus,home_score AS homeScore,
+      away_score AS awayScore,dangerous_attacks_home AS dangerousAttacksHome,dangerous_attacks_away AS dangerousAttacksAway
+      FROM live_snapshots WHERE fixture_id=? AND provider=? AND provider_fixture_id=? AND session_id=? AND captured_at<=?
+      AND elapsed_minute BETWEEN 0 AND 1 AND dangerous_attacks_home IS NOT NULL AND dangerous_attacks_away IS NOT NULL
+      ORDER BY captured_at ASC,id ASC LIMIT 1`).bind(current.fixtureId, current.provider, current.providerFixtureId, projected.sessionId, current.capturedAt).first<LiveSignalSnapshot>();
+    const evaluations = [
+      evaluateDangerousAttacksHtIncrease({ baseline: baselineRow ?? null, current, identityResolved: true }),
+      evaluateDangerousAttacksKickoffIncrease({ baseline: kickoffBaselineRow ?? null, current, identityResolved: true }),
+    ];
+    for (const evaluation of evaluations) {
+      if (evaluation.kind === 'not_applicable') { summary.skipped += 1; summary.reasons[evaluation.reason] = (summary.reasons[evaluation.reason] ?? 0) + 1; continue; }
+      if (evaluation.kind === 'quality_skip') { summary.qualitySkipped += 1; summary.reasons[evaluation.reason] = (summary.reasons[evaluation.reason] ?? 0) + 1; continue; }
+      for (const signal of evaluation.signals) statements.push(db.prepare(`INSERT OR IGNORE INTO live_signals
       (id,fixture_id,team_id,signal_type,signal_version,signal_key,triggered_at,elapsed_minute,rule_parameters_json,feature_json)
       VALUES (?,?,?,?,?,?,?,?,?,?)`).bind(
       signal.signalId, current.fixtureId, null, signal.ruleId, signal.ruleVersion, signal.signalKey,
       signal.detectedAt, signal.detectedMinute, JSON.stringify(signal.ruleParameters), JSON.stringify(signal.feature),
     ));
+    }
   }
   if (!statements.length) return summary;
   const results = await db.batch(statements);

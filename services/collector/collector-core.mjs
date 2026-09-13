@@ -168,6 +168,14 @@ export class GoalApiCollector {
     const minute = /^\d+$/.test(nextStatus) ? Number(nextStatus) : null;
     const nextStats = Array.isArray(data.statistics) ? mergeStatistics(fixture.stats, data.statistics) : fixture.stats;
     if (['HT', 'HALF_TIME', 'HALF TIME'].includes(nextStatus.toUpperCase()) && nextStats.length) fixture.htStats = structuredClone(nextStats);
+    // A kickoff baseline must come from an actual provider update at minute
+    // 0/1. A later first update is never promoted into a fictitious kickoff.
+    if (!fixture.koStats && minute !== null && minute >= 0 && minute <= 1 && nextStats.length) {
+      fixture.koStats = structuredClone(nextStats); fixture.koBaselineMinute = minute;
+    }
+    if (fixture.koStats && minute !== null && minute > fixture.koBaselineMinute && minute <= 25 && nextStats.length) {
+      fixture.koCutoffStats = structuredClone(nextStats); fixture.koCutoffMinute = minute;
+    }
     // This is intentionally in-memory session state. It is only populated
     // after an explicit HT frame was received, then freezes at the newest
     // actual WebSocket state at/before 65'. No historical DB lookup or guess.
@@ -256,7 +264,7 @@ function closeCategory(reason) {
   return 'other';
 }
 
-function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, lastGapReportedAt: null, ended: false, htStats: null, daCutoffStats: null, daCutoffMinute: null, subscriptionState: 'not_subscribed', subscribeRequestedAt: null, subscribedAt: null, lastRefreshAt: null }; }
+function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, lastGapReportedAt: null, ended: false, htStats: null, daCutoffStats: null, daCutoffMinute: null, koStats: null, koBaselineMinute: null, koCutoffStats: null, koCutoffMinute: null, subscriptionState: 'not_subscribed', subscribeRequestedAt: null, subscribedAt: null, lastRefreshAt: null }; }
 function normalizeFixtures(fixtures) { return Array.isArray(fixtures) ? fixtures.filter((fixture) => fixture?.id).map((fixture) => ({ id: String(fixture.id), league: String(fixture.league ?? ''), country: String(fixture.country ?? ''), home: String(fixture.home ?? 'Home'), away: String(fixture.away ?? 'Away'), homeScore: String(fixture.homeScore ?? '-'), awayScore: String(fixture.awayScore ?? '-'), status: String(fixture.status ?? 'LIVE'), kickoffUtc: fixture.kickoffUtc ? String(fixture.kickoffUtc) : null, monitorSource: String(fixture.monitorSource ?? 'manual') })) : []; }
 
 export function mergeStatistics(previous, incoming) {
