@@ -4,7 +4,7 @@ import { matchFixturePair, type FixtureContext } from '@/lib/fixture-identity-br
 import { saveSafeFixtureIdentity } from '@/lib/fixture-identity-store';
 import { saveTypedOdds } from '@/lib/prematch-dual-write';
 import { ApiFootballResponseError, apiFootballFailure, internalApiFootballFailure, parseApiFootballResponse, publicApiFootballFailure } from '@/lib/api-football-response';
-import { ODDS_BATCH_SIZE, splitOddsBatch } from '@/lib/odds-batching';
+import { ODDS_BATCH_SIZE, planOddsResume } from '@/lib/odds-batching';
 
 export const dynamic = 'force-dynamic';
 const BASE = 'https://v3.football.api-sports.io';
@@ -17,7 +17,7 @@ function sameName(a:unknown,b:unknown){const x=normalized(a),y=normalized(b);if(
 function jstDate(value:string){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(value))}
 function targets(candidates:Candidate[]){const map=new Map<string,Target>(),invalid:any[]=[];for(const [index,c] of candidates.entries()){const fields={fixtureId:requiredText(c.fixtureId),kickoffUtc:requiredText(c.kickoffUtc),league:requiredText(c.league),home:requiredText(c.home),away:requiredText(c.away)},missing=Object.entries(fields).filter(([,value])=>!value).map(([name])=>name);if(missing.length){invalid.push({scope:'candidate-validation',candidateIndex:index,goalFixtureId:fields.fixtureId??null,kind:'validation_error',error:`missing required candidate context: ${missing.join(', ')}`});continue}if(map.has(fields.fixtureId!))continue;map.set(fields.fixtureId!,{goal:{id:fields.fixtureId!,kickoffUtc:fields.kickoffUtc!,league:fields.league!,country:requiredText(c.country)??undefined,home:{id:requiredText(c.homeTeamId)??'',name:fields.home!},away:{id:requiredText(c.awayTeamId)??'',name:fields.away!}}})}return{targets:[...map.values()],invalid}}
 function apiContext(value:any):FixtureContext|null{const fixture=value?.fixture,league=value?.league,home=value?.teams?.home,away=value?.teams?.away;if(!fixture?.id||!fixture?.date||!league?.name||!home?.id||!home?.name||!away?.id||!away?.name)return null;return{id:String(fixture.id),kickoffUtc:String(fixture.date),league:String(league.name),country:league.country?String(league.country):undefined,home:{id:String(home.id),name:String(home.name)},away:{id:String(away.id),name:String(away.name)}}}
-async function completedGoalFixtureIds(db:D1Database,formRunId:string){
+async function loadCompletedGoalFixtureIds(db:D1Database,formRunId:string){
   if(!formRunId)return new Set<string>();
   const rows=(await db.prepare('SELECT fixtures_json FROM odds_analysis_runs WHERE form_run_id=? ORDER BY created_at DESC').bind(formRunId).all<{fixtures_json:string}>()).results??[];
   const done=new Set<string>();
@@ -34,7 +34,7 @@ export async function POST(request:Request){
     const formRunId=typeof body?.formRunId==='string'?body.formRunId:'';
     // Resume means only a successfully persisted raw odds snapshot is skipped.
     // NO_ODDS / 429 / discovery failures deliberately remain retryable.
-    const completed=await completedGoalFixtureIds(db,formRunId),pending=allTargets.filter(target=>!completed.has(target.goal.id)),batchPlan=splitOddsBatch(pending),list=batchPlan.batch;
+    const previouslyCompleted=await loadCompletedGoalFixtureIds(db,formRunId),resumePlan=planOddsResume(allTargets,previouslyCompleted,target=>target.goal.id),pending=resumePlan.pending,list=resumePlan.batch;
     if(!list.length)return Response.json({ok:true,runId:null,saved:true,resumed:true,apiRequests:0,matched:0,unmatched:[],identity:{saved:0,noop:0,skipped:0,conflict:0},typed:{saved:0,existing:0,skipped:0,error:0,captureRuns:0,markets:0,unsupported:0,malformed:0},failures:parsedTargets.invalid,remainingCandidates:[],remaining:0,completed:completed.size});
     let lastRequest=0;
     const requestApi=async(endpoint:string,params:Record<string,string>)=>{
@@ -70,12 +70,12 @@ export async function POST(request:Request){
     for(const item of matched){if(!item.safeContext){identity.skipped+=1;continue}try{const result=await saveSafeFixtureIdentity(db,item.target.goal,item.safeContext);identity[result.status]+=1;if(result.status==='saved'||result.status==='noop')typedSources.push({apiFixtureId:String(item.fixture.fixture.id),coreFixtureId:result.coreFixtureId,raw:item.raw})}catch(error){identity.conflict+=1;console.error('fixture identity dual-write failed; raw odds remains saved',error)}}
     let typed={saved:0,existing:0,skipped:0,error:0,captureRuns:0,markets:0,unsupported:0,malformed:0};
     try{typed=await saveTypedOdds(db,{legacyRunId:runId,capturedAt:createdAt,apiRequests,sources:typedSources,raw:{format:'candidate-odds-dual-write-v1',matched:typedSources.map(source=>({apiFixtureId:source.apiFixtureId,coreFixtureId:source.coreFixtureId})),failures}})}catch(error){typed.error=1;console.error('typed odds dual-write failed; raw odds remains saved',error)}
-    const completedGoalFixtureIds=matched.map(item=>item.target.goal.id);
-    const remainingTargets=pending.filter(target=>!completedGoalFixtureIds.includes(target.goal.id));
+    const batchCompletedGoalFixtureIds=matched.map(item=>item.target.goal.id);
+    const remainingTargets=pending.filter(target=>!batchCompletedGoalFixtureIds.includes(target.goal.id));
     // Final state is deliberately an update of the already-created run. This
     // preserves partial raw rows even if identity/typed work fails afterwards.
-    await db.prepare('UPDATE odds_analysis_runs SET api_requests=?,matched_fixtures=?,unmatched_json=?,fixtures_json=? WHERE run_id=?').bind(apiRequests,matched.length,JSON.stringify(unmatched.map((target:any)=>target.goal??target)),JSON.stringify({format:'candidate-odds-batched-v1',fixtureResponses,targets:list.map(t=>t.goal),completedGoalFixtureIds,remainingGoalFixtureIds:remainingTargets.map(t=>t.goal.id),failures}),runId).run();
-    return Response.json({ok:true,runId,saved:true,partial:failures.length>0||remainingTargets.length>0,apiRequests,matched:matched.length,unmatched,identity,typed,failures,haltedForRateLimit:haltForRateLimit,batchSize:ODDS_BATCH_SIZE,processed:list.length,completed:completed.size+completedGoalFixtureIds.length,remaining:remainingTargets.length,remainingCandidates:remainingTargets.map(target=>({fixtureId:target.goal.id,kickoffUtc:target.goal.kickoffUtc,league:target.goal.league,country:target.goal.country??'',home:target.goal.home.name,away:target.goal.away.name,homeTeamId:target.goal.home.id,awayTeamId:target.goal.away.id}))});
+    await db.prepare('UPDATE odds_analysis_runs SET api_requests=?,matched_fixtures=?,unmatched_json=?,fixtures_json=? WHERE run_id=?').bind(apiRequests,matched.length,JSON.stringify(unmatched.map((target:any)=>target.goal??target)),JSON.stringify({format:'candidate-odds-batched-v1',fixtureResponses,targets:list.map(t=>t.goal),completedGoalFixtureIds:batchCompletedGoalFixtureIds,remainingGoalFixtureIds:remainingTargets.map(t=>t.goal.id),failures}),runId).run();
+    return Response.json({ok:true,runId,saved:true,partial:failures.length>0||remainingTargets.length>0,apiRequests,matched:matched.length,unmatched,identity,typed,failures,haltedForRateLimit:haltForRateLimit,batchSize:ODDS_BATCH_SIZE,processed:list.length,completed:previouslyCompleted.size+batchCompletedGoalFixtureIds.length,remaining:remainingTargets.length,remainingCandidates:remainingTargets.map(target=>({fixtureId:target.goal.id,kickoffUtc:target.goal.kickoffUtc,league:target.goal.league,country:target.goal.country??'',home:target.goal.home.name,away:target.goal.away.name,homeTeamId:target.goal.home.id,awayTeamId:target.goal.away.id}))});
   } catch (error) {
     const failure=internalApiFootballFailure(error,'/candidate-odds');
     const status=failure.status && failure.status>=400 ? failure.status : 500;
