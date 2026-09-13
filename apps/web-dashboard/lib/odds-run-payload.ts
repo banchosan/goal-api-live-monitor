@@ -19,3 +19,11 @@ export function fixturesFromOddsRunPayload(raw: string | null | undefined): Json
 export function oddsUnmatched(raw: string | null | undefined): unknown[] {
   try { const parsed: unknown = JSON.parse(raw || '[]'); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
 }
+/** Converts internal GOAL fixture contexts into safe, display-only primitives. */
+export function displayOddsUnmatched(raw: string | null | undefined) {
+  return oddsUnmatched(raw).map((entry) => {
+    const outer = object(entry), source = object(outer.goal && typeof outer.goal === 'object' ? outer.goal : outer);
+    const side = (value: unknown) => { const row = object(value); return typeof value === 'string' ? value : typeof row.name === 'string' ? row.name : ''; };
+    return { fixtureId: typeof source.id === 'string' ? source.id : typeof outer.goalFixtureId === 'string' ? outer.goalFixtureId : '', home: side(source.home), away: side(source.away), league: typeof source.league === 'string' ? source.league : '', country: typeof source.country === 'string' ? source.country : '' };
+  });
+}
