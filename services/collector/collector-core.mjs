@@ -8,11 +8,13 @@ const TOKEN_TIMEOUT_MS = 12_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const STABLE_CONNECTION_MS = 120_000;
 const DATA_GAP_THRESHOLD_MS = 120_000;
+const INITIAL_UPDATE_TIMEOUT_MS = 15_000;
+const MAX_INITIAL_UPDATE_RESUBSCRIBES = 2;
 
 export class GoalApiCollector {
-  constructor({ apiKey, fetchImpl = fetch, WebSocketImpl = WebSocket, persist = async () => {}, schedule = setTimeout, cancelSchedule = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, now = () => new Date().toISOString(), random = Math.random, heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS, stableConnectionMs = STABLE_CONNECTION_MS, dataGapThresholdMs = DATA_GAP_THRESHOLD_MS } = {}) {
+  constructor({ apiKey, fetchImpl = fetch, WebSocketImpl = WebSocket, persist = async () => {}, schedule = setTimeout, cancelSchedule = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, now = () => new Date().toISOString(), random = Math.random, heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS, stableConnectionMs = STABLE_CONNECTION_MS, dataGapThresholdMs = DATA_GAP_THRESHOLD_MS, initialUpdateTimeoutMs = INITIAL_UPDATE_TIMEOUT_MS, maxInitialUpdateResubscribes = MAX_INITIAL_UPDATE_RESUBSCRIBES } = {}) {
     if (!apiKey) throw new Error('GOAL_API_KEYが未設定です');
-    Object.assign(this, { apiKey, fetchImpl, WebSocketImpl, persist, schedule, cancelSchedule, setIntervalImpl, clearIntervalImpl, now, random, heartbeatIntervalMs, stableConnectionMs, dataGapThresholdMs });
+    Object.assign(this, { apiKey, fetchImpl, WebSocketImpl, persist, schedule, cancelSchedule, setIntervalImpl, clearIntervalImpl, now, random, heartbeatIntervalMs, stableConnectionMs, dataGapThresholdMs, initialUpdateTimeoutMs, maxInitialUpdateResubscribes });
     this.sessionId = null; this.connectionId = null; this.sequence = 0; this.socket = null;
     this.fixtures = new Map(); this.desired = false; this.authenticated = false;
     this.sessionStopped = true;
@@ -20,6 +22,7 @@ export class GoalApiCollector {
     this.connectionState = 'idle'; this.lastError = null; this.lastSocketActivityAt = null; this.heartbeatTimer = null;
     this.connection = null; this.tokenRequestsByReason = {}; this.reconnectsByReason = {};
     this.currentConnectionIsReconnect = false;
+    this.initialUpdateTimers = new Map();
   }
 
   status() { return { active: this.desired, sessionId: this.sessionId, connectionId: this.connectionId, connectionState: this.connectionState, authenticated: this.authenticated, reconnectAttempt: this.reconnectAttempt, goalApiRequests: this.goalApiRequests, tokenRequestsByReason: structuredClone(this.tokenRequestsByReason), reconnectsByReason: structuredClone(this.reconnectsByReason), lastError: this.lastError, lastSocketActivityAt: this.lastSocketActivityAt, connection: this.connection ? structuredClone(this.connection) : null, fixtures: [...this.fixtures.values()].map((fixture) => structuredClone(fixture)) }; }
@@ -51,6 +54,7 @@ export class GoalApiCollector {
   async remove(fixtureId, reason = 'manual_fixture_unsubscribe') {
     const fixture = this.fixtures.get(String(fixtureId));
     if (!fixture) throw new Error('監視対象fixtureが見つかりません');
+    this.clearInitialUpdateTimer(fixture);
     const activeCount = [...this.fixtures.values()].filter((item) => !item.ended).length;
     if (activeCount === 1 && !fixture.ended) { await this.stop(reason); this.fixtures.delete(fixture.id); return this.status(); }
     if (!fixture.ended && this.socket?.readyState === 1) {
@@ -92,6 +96,7 @@ export class GoalApiCollector {
     this.desired = false; this.sessionStopped = true; this.connectionState = 'stopping';
     if (this.reconnectTimer) this.cancelSchedule(this.reconnectTimer); this.reconnectTimer = null;
     this.stopHeartbeat();
+    for (const fixture of this.fixtures.values()) this.clearInitialUpdateTimer(fixture);
     for (const fixture of this.fixtures.values()) if (!fixture.ended && this.socket?.readyState === 1) {
       this.socket.send(JSON.stringify({ type: 'unsubscribe', resource: 'match', matchId: fixture.id }));
       await this.emit('unsubscribe', fixture, { reason }, { source: 'websocket' });
@@ -154,6 +159,7 @@ export class GoalApiCollector {
       if (fixture && message.type === 'subscribe_response') {
         fixture.subscriptionState = message.success ? 'subscribed_waiting' : 'failed';
         fixture.subscribedAt = this.now();
+        if (message.success) this.armInitialUpdateTimer(fixture);
       }
       if (fixture) await this.emit(type, fixture, message, { source: 'websocket' }); else await this.emitForActive(type, message, { source: 'websocket' }); return;
     }
@@ -182,6 +188,7 @@ export class GoalApiCollector {
     if (fixture.htStats && minute !== null && minute > 45 && minute <= 65 && nextStats.length) { fixture.daCutoffStats = structuredClone(nextStats); fixture.daCutoffMinute = minute; }
     Object.assign(fixture, { home: data.match_hometeam_name ?? fixture.home, away: data.match_awayteam_name ?? fixture.away, homeScore: String(data.match_hometeam_score ?? fixture.homeScore), awayScore: String(data.match_awayteam_score ?? fixture.awayScore), status: nextStatus, stats: structuredClone(nextStats), updates: fixture.updates + 1, updatedAt: receivedAt, lastReceivedAt: receivedAt });
     fixture.subscriptionState = 'receiving';
+    this.clearInitialUpdateTimer(fixture);
     fixture.lastGapReportedAt = null;
     if (this.connection) { this.connection.firstMatchUpdateAt ??= receivedAt; this.connection.lastMatchUpdateAt = receivedAt; }
     await this.emit('match_update', fixture, message, { source: 'websocket', receivedAt, providerTimestamp: providerTimestamp(data) });
@@ -190,10 +197,43 @@ export class GoalApiCollector {
 
   subscribe(fixtureId, reconnect, reason = reconnect ? 'socket_reconnect' : 'initial_subscribe') {
     const fixture = this.fixtures.get(fixtureId); if (!fixture || !this.socket || this.socket.readyState !== 1) return;
+    this.clearInitialUpdateTimer(fixture);
     fixture.subscriptionState = 'pending'; fixture.subscribeRequestedAt = this.now();
     this.socket.send(JSON.stringify({ type: 'subscribe', resource: 'match', matchId: fixtureId }));
     if (this.connection) this.connection.subscribedFixtureCount = this.activeFixtureCount();
     void this.emit(reconnect ? 'resubscribe' : 'subscribe', fixture, { matchId: fixtureId, reason }, { source: 'websocket' });
+  }
+
+  armInitialUpdateTimer(fixture) {
+    this.clearInitialUpdateTimer(fixture);
+    if (fixture.updates || !this.initialUpdateTimeoutMs || this.initialUpdateTimeoutMs < 1) return;
+    const timer = this.schedule(() => {
+      this.initialUpdateTimers.delete(fixture.id);
+      void this.retryInitialSubscription(fixture.id);
+    }, this.initialUpdateTimeoutMs);
+    this.initialUpdateTimers.set(fixture.id, timer);
+    fixture.initialUpdateDeadlineAt = new Date(Date.parse(fixture.subscribedAt ?? this.now()) + this.initialUpdateTimeoutMs).toISOString();
+  }
+
+  clearInitialUpdateTimer(fixture) {
+    const timer = fixture && this.initialUpdateTimers.get(fixture.id);
+    if (timer) this.cancelSchedule(timer);
+    if (fixture) { this.initialUpdateTimers.delete(fixture.id); fixture.initialUpdateDeadlineAt = null; }
+  }
+
+  async retryInitialSubscription(fixtureId) {
+    const fixture = this.fixtures.get(String(fixtureId));
+    if (!fixture || fixture.ended || fixture.updates || fixture.subscriptionState !== 'subscribed_waiting') return;
+    const attempt = fixture.initialUpdateResubscribeAttempts ?? 0;
+    if (attempt >= this.maxInitialUpdateResubscribes) {
+      fixture.subscriptionState = 'provider_silent';
+      await this.emit('initial_update_timeout', fixture, { matchId: fixture.id, attempts: attempt, timeoutMs: this.initialUpdateTimeoutMs, reason: 'subscribe_success_without_match_update' }, { source: 'system' });
+      return;
+    }
+    if (!this.authenticated || !this.socket || this.socket.readyState !== 1) return;
+    fixture.initialUpdateResubscribeAttempts = attempt + 1;
+    await this.emit('initial_update_resubscribe', fixture, { matchId: fixture.id, attempt: fixture.initialUpdateResubscribeAttempts, timeoutMs: this.initialUpdateTimeoutMs, reason: 'subscribe_success_without_match_update' }, { source: 'system' });
+    await this.refresh(fixture.id, 'auto_initial_update_timeout');
   }
 
   async finishFixture(fixture, raw) {
@@ -264,7 +304,7 @@ function closeCategory(reason) {
   return 'other';
 }
 
-function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, lastGapReportedAt: null, ended: false, htStats: null, daCutoffStats: null, daCutoffMinute: null, koStats: null, koBaselineMinute: null, koCutoffStats: null, koCutoffMinute: null, subscriptionState: 'not_subscribed', subscribeRequestedAt: null, subscribedAt: null, lastRefreshAt: null }; }
+function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, lastGapReportedAt: null, ended: false, htStats: null, daCutoffStats: null, daCutoffMinute: null, koStats: null, koBaselineMinute: null, koCutoffStats: null, koCutoffMinute: null, subscriptionState: 'not_subscribed', subscribeRequestedAt: null, subscribedAt: null, initialUpdateDeadlineAt: null, initialUpdateResubscribeAttempts: 0, lastRefreshAt: null }; }
 function normalizeFixtures(fixtures) { return Array.isArray(fixtures) ? fixtures.filter((fixture) => fixture?.id).map((fixture) => ({ id: String(fixture.id), league: String(fixture.league ?? ''), country: String(fixture.country ?? ''), home: String(fixture.home ?? 'Home'), away: String(fixture.away ?? 'Away'), homeScore: String(fixture.homeScore ?? '-'), awayScore: String(fixture.awayScore ?? '-'), status: String(fixture.status ?? 'LIVE'), kickoffUtc: fixture.kickoffUtc ? String(fixture.kickoffUtc) : null, monitorSource: String(fixture.monitorSource ?? 'manual') })) : []; }
 
 export function mergeStatistics(previous, incoming) {
