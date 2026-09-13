@@ -165,8 +165,13 @@ export class GoalApiCollector {
     const data = message.data ?? {}; const fixtureId = String(data.id ?? data.fixture_id ?? data.fixtureId ?? ''); const fixture = this.fixtures.get(fixtureId); if (!fixture) return;
     const receivedAt = this.now();
     const nextStatus = String(data.match_status ?? fixture.status);
+    const minute = /^\d+$/.test(nextStatus) ? Number(nextStatus) : null;
     const nextStats = Array.isArray(data.statistics) ? mergeStatistics(fixture.stats, data.statistics) : fixture.stats;
     if (['HT', 'HALF_TIME', 'HALF TIME'].includes(nextStatus.toUpperCase()) && nextStats.length) fixture.htStats = structuredClone(nextStats);
+    // This is intentionally in-memory session state. It is only populated
+    // after an explicit HT frame was received, then freezes at the newest
+    // actual WebSocket state at/before 65'. No historical DB lookup or guess.
+    if (fixture.htStats && minute !== null && minute > 45 && minute <= 65 && nextStats.length) { fixture.daCutoffStats = structuredClone(nextStats); fixture.daCutoffMinute = minute; }
     Object.assign(fixture, { home: data.match_hometeam_name ?? fixture.home, away: data.match_awayteam_name ?? fixture.away, homeScore: String(data.match_hometeam_score ?? fixture.homeScore), awayScore: String(data.match_awayteam_score ?? fixture.awayScore), status: nextStatus, stats: structuredClone(nextStats), updates: fixture.updates + 1, updatedAt: receivedAt, lastReceivedAt: receivedAt });
     fixture.subscriptionState = 'receiving';
     fixture.lastGapReportedAt = null;
@@ -251,7 +256,7 @@ function closeCategory(reason) {
   return 'other';
 }
 
-function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, lastGapReportedAt: null, ended: false, htStats: null, subscriptionState: 'not_subscribed', subscribeRequestedAt: null, subscribedAt: null, lastRefreshAt: null }; }
+function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, lastGapReportedAt: null, ended: false, htStats: null, daCutoffStats: null, daCutoffMinute: null, subscriptionState: 'not_subscribed', subscribeRequestedAt: null, subscribedAt: null, lastRefreshAt: null }; }
 function normalizeFixtures(fixtures) { return Array.isArray(fixtures) ? fixtures.filter((fixture) => fixture?.id).map((fixture) => ({ id: String(fixture.id), league: String(fixture.league ?? ''), country: String(fixture.country ?? ''), home: String(fixture.home ?? 'Home'), away: String(fixture.away ?? 'Away'), homeScore: String(fixture.homeScore ?? '-'), awayScore: String(fixture.awayScore ?? '-'), status: String(fixture.status ?? 'LIVE'), kickoffUtc: fixture.kickoffUtc ? String(fixture.kickoffUtc) : null, monitorSource: String(fixture.monitorSource ?? 'manual') })) : []; }
 
 export function mergeStatistics(previous, incoming) {
