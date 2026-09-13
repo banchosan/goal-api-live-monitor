@@ -163,11 +163,10 @@ export class GoalApiCollector {
     }
     if (message.type !== 'match_update') { await this.emitForActive('websocket_frame', message, { source: 'websocket' }); return; }
     const data = message.data ?? {}; const fixtureId = String(data.id ?? data.fixture_id ?? data.fixtureId ?? ''); const fixture = this.fixtures.get(fixtureId); if (!fixture) return;
-    const receivedAt = this.now(); const previousMinute = /^\d+$/.test(String(fixture.status)) ? Number(fixture.status) : null;
-    const nextStatus = String(data.match_status ?? fixture.status); const minute = /^\d+$/.test(nextStatus) ? Number(nextStatus) : null;
+    const receivedAt = this.now();
+    const nextStatus = String(data.match_status ?? fixture.status);
     const nextStats = Array.isArray(data.statistics) ? mergeStatistics(fixture.stats, data.statistics) : fixture.stats;
     if (['HT', 'HALF_TIME', 'HALF TIME'].includes(nextStatus.toUpperCase()) && nextStats.length) fixture.htStats = structuredClone(nextStats);
-    else if (!fixture.htStats && minute !== null && minute >= 46 && previousMinute !== null && previousMinute <= 45 && fixture.stats.length) fixture.htStats = structuredClone(fixture.stats);
     Object.assign(fixture, { home: data.match_hometeam_name ?? fixture.home, away: data.match_awayteam_name ?? fixture.away, homeScore: String(data.match_hometeam_score ?? fixture.homeScore), awayScore: String(data.match_awayteam_score ?? fixture.awayScore), status: nextStatus, stats: structuredClone(nextStats), updates: fixture.updates + 1, updatedAt: receivedAt, lastReceivedAt: receivedAt });
     fixture.subscriptionState = 'receiving';
     fixture.lastGapReportedAt = null;

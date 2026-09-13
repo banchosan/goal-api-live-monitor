@@ -17,7 +17,9 @@ export function resolveDangerousAttacksWindow(snapshots: LiveSnapshot[], maxLagM
   const cutoff = resolveCheckpoint(snapshots, 65, maxLagMinutes);
   return {
     fixtureId: snapshots[0].fixture_id,
-    halfTime: halfTime.snapshot ? {
+    // An observed HT status is necessary but not sufficient: both DA values
+    // must be present. A real zero remains valid; null never becomes zero.
+    halfTime: halfTime.snapshot && halfTime.snapshot.dangerous_attacks_home !== null && halfTime.snapshot.dangerous_attacks_away !== null ? {
       actualMinute: halfTime.actualMinute,
       capturedAt: halfTime.capturedAt,
       home: halfTime.snapshot.dangerous_attacks_home,

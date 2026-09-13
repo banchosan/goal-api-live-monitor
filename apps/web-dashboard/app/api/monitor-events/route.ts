@@ -72,6 +72,7 @@ export async function POST(request: Request) {
 }
 
 type ProjectionSummary = { saved: number; skipped: number; duplicates: number; errors: number; signalSaved: number; signalDuplicates: number; signalSkipped: number; signalQualitySkipped: number; signalErrors: number; signalReasons: Record<string, number>; error?: string; signalError?: string };
+type ProjectedSnapshot = { snapshot: NonNullable<ReturnType<typeof normalizeGoalLiveSnapshot>>; sessionId: string };
 
 function signalSnapshot(snapshot: ReturnType<typeof normalizeGoalLiveSnapshot>): LiveSignalSnapshot {
   if (!snapshot) throw new Error('snapshot is required');
@@ -87,7 +88,7 @@ function signalSnapshot(snapshot: ReturnType<typeof normalizeGoalLiveSnapshot>):
 async function persistLiveSnapshots(db: D1Database, events: StoredEvent[]): Promise<ProjectionSummary> {
   const statements: D1PreparedStatement[] = [];
   const summary: ProjectionSummary = { saved: 0, skipped: 0, duplicates: 0, errors: 0, signalSaved: 0, signalDuplicates: 0, signalSkipped: 0, signalQualitySkipped: 0, signalErrors: 0, signalReasons: {} };
-  const projected: ReturnType<typeof normalizeGoalLiveSnapshot>[] = [];
+  const projected: ProjectedSnapshot[] = [];
   for (const event of events) {
     if (event.eventType !== 'match_update' || !event.clientEventId) { summary.skipped += 1; continue; }
     const mapping = await db.prepare(`SELECT fixture_id FROM fixture_provider_ids
@@ -96,7 +97,7 @@ async function persistLiveSnapshots(db: D1Database, events: StoredEvent[]): Prom
     if (!mapping?.fixture_id) { summary.skipped += 1; continue; }
     const snapshot = normalizeGoalLiveSnapshot(event, mapping.fixture_id);
     if (!snapshot) { summary.skipped += 1; continue; }
-    projected.push(snapshot);
+    projected.push({ snapshot, sessionId: event.sessionId });
     statements.push(db.prepare(`INSERT OR IGNORE INTO live_snapshots
       (fixture_id,session_id,source_client_event_id,provider,provider_fixture_id,provider_event_key,provider_timestamp,captured_at,
        elapsed_minute,added_time,match_status,home_score,away_score,shots_home,shots_away,shots_on_target_home,shots_on_target_away,
@@ -134,19 +135,19 @@ async function persistLiveSnapshots(db: D1Database, events: StoredEvent[]): Prom
 
 type SignalProjectionSummary = { saved: number; duplicates: number; skipped: number; qualitySkipped: number; reasons: Record<string, number> };
 
-async function persistDangerousAttackSignals(db: D1Database, snapshots: ReturnType<typeof normalizeGoalLiveSnapshot>[]): Promise<SignalProjectionSummary> {
+async function persistDangerousAttackSignals(db: D1Database, snapshots: ProjectedSnapshot[]): Promise<SignalProjectionSummary> {
   const summary: SignalProjectionSummary = { saved: 0, duplicates: 0, skipped: 0, qualitySkipped: 0, reasons: {} };
   const statements: D1PreparedStatement[] = [];
-  for (const source of snapshots) {
-    if (!source) continue;
-    const current = signalSnapshot(source);
+  for (const projected of snapshots) {
+    const current = signalSnapshot(projected.snapshot);
     const baselineRow = await db.prepare(`SELECT fixture_id AS fixtureId,provider,provider_fixture_id AS providerFixtureId,
       source_client_event_id AS sourceClientEventId,provider_event_key AS providerEventKey,captured_at AS capturedAt,
       elapsed_minute AS elapsedMinute,added_time AS addedTime,match_status AS matchStatus,home_score AS homeScore,
       away_score AS awayScore,dangerous_attacks_home AS dangerousAttacksHome,dangerous_attacks_away AS dangerousAttacksAway
-      FROM live_snapshots WHERE fixture_id=? AND provider=? AND provider_fixture_id=? AND captured_at<=?
+      FROM live_snapshots WHERE fixture_id=? AND provider=? AND provider_fixture_id=? AND session_id=? AND captured_at<=?
       AND upper(replace(replace(match_status,'_',' '),'-',' ')) IN ('HT','HALF TIME')
-      ORDER BY captured_at DESC,id DESC LIMIT 1`).bind(current.fixtureId, current.provider, current.providerFixtureId, current.capturedAt).first<LiveSignalSnapshot>();
+      AND dangerous_attacks_home IS NOT NULL AND dangerous_attacks_away IS NOT NULL
+      ORDER BY captured_at DESC,id DESC LIMIT 1`).bind(current.fixtureId, current.provider, current.providerFixtureId, projected.sessionId, current.capturedAt).first<LiveSignalSnapshot>();
     const evaluation = evaluateDangerousAttacksHtIncrease({ baseline: baselineRow ?? null, current, identityResolved: true });
     if (evaluation.kind === 'not_applicable') { summary.skipped += 1; summary.reasons[evaluation.reason] = (summary.reasons[evaluation.reason] ?? 0) + 1; continue; }
     if (evaluation.kind === 'quality_skip') { summary.qualitySkipped += 1; summary.reasons[evaluation.reason] = (summary.reasons[evaluation.reason] ?? 0) + 1; continue; }

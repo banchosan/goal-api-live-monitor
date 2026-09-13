@@ -17,3 +17,10 @@ test('does not substitute a stale value for a 65 minute checkpoint', () => {
   const window = resolveDangerousAttacksWindow([snapshot({ status:'HT', minute:45 }), snapshot({ minute:58 })]);
   assert.equal(window?.cutoff, null);
 });
+
+test('requires both observed HT DA values while preserving a true zero', () => {
+  const validZero = resolveDangerousAttacksWindow([snapshot({ status:'HT', minute:45, home:0, away:0 }), snapshot({ minute:64 })]);
+  const missing = resolveDangerousAttacksWindow([snapshot({ status:'HT', minute:45, home:null, away:0 }), snapshot({ minute:64 })]);
+  assert.deepEqual(validZero?.halfTime && [validZero.halfTime.home, validZero.halfTime.away], [0, 0]);
+  assert.equal(missing?.halfTime, null);
+});

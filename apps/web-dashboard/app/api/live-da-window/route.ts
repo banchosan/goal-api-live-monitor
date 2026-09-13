@@ -9,8 +9,10 @@ function database() { return (env as unknown as { DB: D1Database }).DB; }
 
 /** Read-only dashboard helper: returns the causal HT and <=65' checkpoints. */
 export async function GET(request: Request) {
-  const fixtureIds = [...new Set((new URL(request.url).searchParams.get('fixtureIds') ?? '').split(',').map((value) => value.trim()).filter(Boolean))].slice(0, 25);
-  if (!fixtureIds.length) return Response.json({ windows: [] });
+  const url = new URL(request.url);
+  const fixtureIds = [...new Set((url.searchParams.get('fixtureIds') ?? '').split(',').map((value) => value.trim()).filter(Boolean))].slice(0, 25);
+  const sessionId = url.searchParams.get('sessionId')?.trim();
+  if (!fixtureIds.length || !sessionId) return Response.json({ windows: [] });
   const db = database(); await ensureMonitorSchema(db);
   const placeholders = fixtureIds.map(() => '?').join(',');
   const result = await db.prepare(`SELECT fixture_id,provider_fixture_id,source_client_event_id,provider_event_key,captured_at,elapsed_minute,added_time,match_status,
@@ -19,8 +21,8 @@ export async function GET(request: Request) {
     red_cards_home,red_cards_away,saves_home,saves_away,passes_total_home,passes_total_away,passes_accurate_home,
     passes_accurate_away,possession_home,possession_away
     FROM live_snapshots
-    WHERE provider='goal-api' AND provider_fixture_id IN (${placeholders}) AND elapsed_minute IS NOT NULL AND elapsed_minute <= 65
-    ORDER BY provider_fixture_id,captured_at,source_client_event_id`).bind(...fixtureIds).all<LiveSnapshot & { provider_fixture_id: string }>();
+    WHERE provider='goal-api' AND session_id=? AND provider_fixture_id IN (${placeholders}) AND elapsed_minute IS NOT NULL AND elapsed_minute <= 65
+    ORDER BY provider_fixture_id,captured_at,source_client_event_id`).bind(sessionId, ...fixtureIds).all<LiveSnapshot & { provider_fixture_id: string }>();
   const grouped = new Map<string, LiveSnapshot[]>();
   for (const row of result.results ?? []) {
     const providerFixtureId = (row as LiveSnapshot & { provider_fixture_id: string }).provider_fixture_id;
