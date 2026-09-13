@@ -90,10 +90,26 @@ function resultForTeam(match: Record<string, any>, teamId: string) {
 }
 
 export async function POST(request: Request) {
+  const body = await request.json().catch(() => null);
+  // Re-admit a persisted analysis after an allowlist update without calling
+  // GOAL upcoming or team-results endpoints again. This is intentionally an
+  // explicit action rather than a write-on-read side effect.
+  if (body?.action === 'auto_bookmark_saved') {
+    const db = (env as unknown as { DB: D1Database }).DB;
+    await ensureRuntimeSchema(db);
+    const runId = typeof body.runId === 'string' && body.runId.trim() ? body.runId.trim() : null;
+    const saved = runId
+      ? await db.prepare('SELECT run_id AS runId,created_at AS createdAt,candidates_json AS candidatesJson FROM form_analysis_runs WHERE run_id=?').bind(runId).first<{ runId:string; createdAt:string; candidatesJson:string }>()
+      : await db.prepare('SELECT run_id AS runId,created_at AS createdAt,candidates_json AS candidatesJson FROM form_analysis_runs ORDER BY created_at DESC LIMIT 1').first<{ runId:string; createdAt:string; candidatesJson:string }>();
+    if (!saved) return Response.json({ error: '保存済みform analysis runが見つかりません', apiRequests: 0 }, { status: 404 });
+    let candidates: Array<Record<string, unknown>>;
+    try { candidates = JSON.parse(saved.candidatesJson); } catch { return Response.json({ error: '保存済みcandidate payloadが壊れています', apiRequests: 0 }, { status: 422 }); }
+    if (!Array.isArray(candidates)) return Response.json({ error: '保存済みcandidate payloadが配列ではありません', apiRequests: 0 }, { status: 422 });
+    const autoForm = await saveAutoFormBookmarks(db, { runId: saved.runId, selectedAt: new Date().toISOString(), candidates });
+    return Response.json({ runId: saved.runId, apiRequests: 0, autoForm });
+  }
   const apiKey = process.env.GOAL_API_KEY;
   if (!apiKey) return Response.json({ error: 'GOAL_API_KEYが未設定です', apiRequests: 0 }, { status: 500 });
-
-  const body = await request.json().catch(() => null);
   const fixtures: InputFixture[] = Array.isArray(body?.fixtures) ? body.fixtures : [];
   const teams = new Map<string, TeamTask>();
   for (const fixture of fixtures) {

@@ -25,6 +25,11 @@ test('allowlist is provider-ID based and rejects unknown/missing IDs',()=>{
   assert.equal(autoLeagueEligibility({...fixture,leagueId:'not-observed'}).reason,'LEAGUE_NOT_ALLOWLISTED');
   assert.equal(autoLeagueEligibility({...fixture,leagueName:'Different'}).reason,'LEAGUE_METADATA_CONFLICT');
 });
+test('newly observed target league IDs require their exact provider metadata',()=>{
+  assert.equal(autoLeagueEligibility({...fixture,leagueId:'cmr77dvgm0001rx060h6ivt4p',leagueName:'2. Bundesliga',country:'Germany'}).eligible,true);
+  assert.equal(autoLeagueEligibility({...fixture,leagueId:'cmr77dw9g00gvrx06jlglb47m',leagueName:'First Division A',country:'Belgium'}).eligible,true);
+  assert.equal(autoLeagueEligibility({...fixture,leagueId:'cmr77dvpd006zrx06dmggkel8',leagueName:'Serie B',country:'Brazil'}).reason,'LEAGUE_METADATA_CONFLICT');
+});
 test('strict fixture validation rejects incomplete or self-opponent payload',()=>{
   assert.equal(validateGoalFixture({...fixture,homeTeamId:''}),'missing_home_team_id');
   assert.equal(validateGoalFixture({...fixture,kickoffUtc:'bad'}),'invalid_kickoff');

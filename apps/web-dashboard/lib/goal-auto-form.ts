@@ -11,14 +11,21 @@ export type GoalIdentityResult =
  | { status: 'CONFLICT' | 'REJECTED'; reason: string };
 
 // IDs below are observed in local GOAL raw payloads with the exact country/name
-// shown.  The remaining requested leagues are intentionally absent until a raw
-// provider payload proves their IDs.
+// shown. Scottish Premiership remains intentionally absent until a raw provider
+// payload proves its ID; no league is admitted by name alone.
 export const GOAL_AUTO_LEAGUES: Record<string, { name: string; country: string }> = {
   'cmr77dvkr005nrx06lp7rvp49': { name: 'Premier League', country: 'England' },
+  'cmr77dvkr005hrx068xaahpuh': { name: 'Championship', country: 'England' },
   'cmr77dvnt006nrx063v3w622e': { name: 'La Liga', country: 'Spain' },
   'cmr77dvnt006orx06io7l06lv': { name: 'Segunda División', country: 'Spain' },
+  'cmr77dvgm0002rx06rt2uqxii': { name: 'Bundesliga', country: 'Germany' },
+  'cmr77dvgm0001rx060h6ivt4p': { name: '2. Bundesliga', country: 'Germany' },
   'cmr77dvpd006yrx06zig7907g': { name: 'Serie A', country: 'Italy' },
+  'cmr77dvpd006zrx06dmggkel8': { name: 'Serie B', country: 'Italy' },
+  'cmr77dvqg007crx06q1kaceyo': { name: 'Ligue 1', country: 'France' },
   'cmr77dvqg007drx06q6y56j5u': { name: 'Ligue 2', country: 'France' },
+  'cmr77dvrh007vrx0664phtxs5': { name: 'Eredivisie', country: 'Netherlands' },
+  'cmr77dw9g00gvrx06jlglb47m': { name: 'First Division A', country: 'Belgium' },
   'cmr77dvun00adrx06xz20yfxe': { name: 'Primeira Liga', country: 'Portugal' },
   'cmr77dw0q00eprx06rqew3m48': { name: 'Süper Lig', country: 'Turkey' },
 };
