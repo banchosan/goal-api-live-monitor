@@ -81,6 +81,10 @@ export async function GET() {
       if (kickoffMs < startMs || kickoffMs > endMs) { outsideWindow += 1; return []; }
       return [{
         id: String(id),
+        // This is the GOAL provider's canonical league identity.  Keep it
+        // additive in the public response; AUTO_FORM must never infer it
+        // from a display name.
+        leagueId: String(fixture.leagueId ?? fixture.league?.id ?? fixture.league_id ?? ''),
         league: fixture.leagueName ?? fixture.league?.name ?? fixture.league_name ?? 'Unknown league',
         country: fixture.countryName ?? fixture.league?.country?.name ?? fixture.country_name ?? '',
         home: fixture.homeTeamName ?? fixture.homeTeam?.name ?? fixture.match_hometeam_name ?? 'Home',

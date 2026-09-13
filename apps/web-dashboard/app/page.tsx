@@ -9,7 +9,7 @@ import { readJsonResponse, responseFailureMessage } from '@/lib/safe-json-respon
 import { isGoalProviderPlaceholderZeroPair } from '@/lib/live-stat-availability';
 
 type Fixture = { id: string; league: string; country: string; home: string; away: string; homeScore: string; awayScore: string; status: string; kickoffUtc?: string };
-type UpcomingFixture = { id: string; league: string; country: string; home: string; away: string; homeTeamId: string; awayTeamId: string; kickoffUtc: string; kickoffJst: string; status: string };
+type UpcomingFixture = { id: string; league: string; leagueId?: string; country: string; home: string; away: string; homeTeamId: string; awayTeamId: string; kickoffUtc: string; kickoffJst: string; status: string };
 type FormCandidate = { kickoffUtc: string; kickoffJst: string; league: string; country: string; fixtureId: string; home:string; away:string; homeTeamId:string; awayTeamId:string; teamId:string; team: string; side: 'home' | 'away'; opponent: string; wins: number; draws: number; last5: { result: string; score: string; opponent: string; fixtureId: string }[] };
 type Stat = { type: string; home: string | number | null; away: string | number | null };
 type ManualSnapshot = { id: string; status: string; capturedAt: string; stats: Stat[] };
@@ -247,7 +247,8 @@ function UpcomingBoard({ fixtures, loading, onRest, bookmarks, onBookmark }: { f
       setOddsMessage('');
       const outcomes = Object.entries(data.outcomeCounts ?? {}).map(([name, count]) => `${name} ${count}`).join(' / ');
       const typed=data.typed;const typedMessage=typed?` typed form: 保存 ${typed.saved ?? 0} / 既存 ${typed.existing ?? 0} / 保留 ${typed.skipped ?? 0} / error ${typed.error ?? 0}。`:'';
-      setAnalysisMessage(`${data.checkedTeams}チームを${data.apiRequests} RESTで確認（retry ${data.retryCount ?? 0}）。最終候補は${data.candidates.length}チーム（直近2戦 LL / DL / LD により${data.excludedCount ?? 0}チーム除外）${data.failedTeams ? `（取得失敗 ${data.failedTeams}）` : ''}。${outcomes ? `内訳: ${outcomes}。` : ''}${data.saved ? '分析結果を履歴保存しました。' : '結果の保存だけ失敗しました。'}${typedMessage}`);
+      const auto=data.autoForm;const autoMessage=auto?` AUTO監視: allowlist ${auto.eligible ?? 0} / identity作成 ${auto.created ?? 0} / 既存 ${auto.existing ?? 0} / Bookmark登録 ${auto.bookmarked ?? 0} / conflict ${auto.conflicts ?? 0} / 保留 ${Object.values(auto.skipped ?? {}).reduce((sum:any,value:any)=>Number(sum)+Number(value),0)}。`:'';
+      setAnalysisMessage(`${data.checkedTeams}チームを${data.apiRequests} RESTで確認（retry ${data.retryCount ?? 0}）。最終候補は${data.candidates.length}チーム（直近2戦 LL / DL / LD により${data.excludedCount ?? 0}チーム除外）${data.failedTeams ? `（取得失敗 ${data.failedTeams}）` : ''}。${outcomes ? `内訳: ${outcomes}。` : ''}${data.saved ? '分析結果を履歴保存しました。' : '結果の保存だけ失敗しました。'}${typedMessage}${autoMessage}`);
     } catch (error) { setAnalysisMessage(error instanceof Error ? error.message : '分析エラー'); }
     finally { setAnalyzing(false); }
   }

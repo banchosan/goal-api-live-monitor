@@ -25,7 +25,7 @@ export class BookmarkScheduler {
     const eligible = bookmarks.filter((b) => ['waiting', 'monitoring'].includes(b.status) && !excludedIds.has(String(b.fixtureId)) && !monitored.has(String(b.fixtureId)) && (b.status === 'monitoring' || Date.parse(b.kickoffUtc) - this.leadMs <= this.now()));
     const due = eligible
       .sort((a, b) => Date.parse(a.kickoffUtc) - Date.parse(b.kickoffUtc)).slice(0, slots)
-      .map((b) => ({ id:String(b.fixtureId),home:b.home,away:b.away,league:b.league,country:b.country,kickoffUtc:b.kickoffUtc,status:'SCHEDULED',homeScore:'-',awayScore:'-',monitorSource:'bookmark' }));
+      .map((b) => ({ id:String(b.fixtureId),home:b.home,away:b.away,league:b.league,country:b.country,kickoffUtc:b.kickoffUtc,status:'SCHEDULED',homeScore:'-',awayScore:'-',monitorSource:b.monitorSource === 'auto_form' ? 'auto_form' : 'bookmark' }));
     if (due.length) refreshed.active ? await this.collector.add(due) : await this.collector.start(due);
     return { added: due.map((f) => f.id), queued: Math.max(0, eligible.length - due.length), excluded: [...excludedIds] };
   }

@@ -3,6 +3,7 @@ import { ensureRuntimeSchema } from '@/db/schema';
 import { fetchTeamResults, TEAM_RESULTS_CONCURRENCY } from '@/lib/team-results-client';
 import { evaluateFormCandidate, toChronologicalResults } from '@/lib/form-candidate-rules';
 import { saveTypedFormObservations } from '@/lib/prematch-dual-write';
+import { autoLeagueEligibility, writeGoalFixtureIdentity, type GoalFixtureInput } from '@/lib/goal-auto-form';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,6 +11,7 @@ const BATCH_SIZE = TEAM_RESULTS_CONCURRENCY;
 
 type InputFixture = {
   id: string; league: string; country: string; home: string; away: string;
+  leagueId?: string;
   homeTeamId: string; awayTeamId: string; kickoffUtc: string; kickoffJst: string;
 };
 
@@ -21,6 +23,47 @@ async function saveAnalysis(payload: { runId:string;createdAt:string;checkedTeam
   await db.prepare(`INSERT INTO form_analysis_runs
     (run_id, created_at, checked_teams, failed_teams, api_requests, candidates_json, checked_json)
     VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(payload.runId,payload.createdAt,payload.checkedTeams,payload.failedTeams,payload.apiRequests,JSON.stringify(payload.candidates),JSON.stringify(payload.checked)).run();
+}
+
+type AutoSummary = { eligible: number; created: number; existing: number; bookmarked: number; skipped: Record<string, number>; conflicts: number };
+const skip = (summary: AutoSummary, reason: string) => { summary.skipped[reason] = (summary.skipped[reason] ?? 0) + 1; };
+
+/**
+ * Runs strictly after raw form history is committed.  A typed identity failure
+ * can never discard a form run.  Every graph write is done by the writer in a
+ * single batch; bookmarks are only added after CREATED/EXISTING succeeds.
+ */
+export async function saveAutoFormBookmarks(db: D1Database, input: { runId: string; selectedAt: string; candidates: Array<Record<string, unknown>> }): Promise<AutoSummary> {
+  const summary: AutoSummary = { eligible: 0, created: 0, existing: 0, bookmarked: 0, skipped: {}, conflicts: 0 };
+  const byFixture = new Map<string, Record<string, unknown>>();
+  for (const candidate of input.candidates) if (candidate.fixtureId) byFixture.set(String(candidate.fixtureId), candidate);
+  for (const candidate of byFixture.values()) {
+    const fixture: GoalFixtureInput = {
+      providerFixtureId: String(candidate.fixtureId ?? ''), kickoffUtc: String(candidate.kickoffUtc ?? ''), leagueId: String(candidate.leagueId ?? ''),
+      leagueName: String(candidate.league ?? ''), country: String(candidate.country ?? ''), homeTeamId: String(candidate.homeTeamId ?? ''), awayTeamId: String(candidate.awayTeamId ?? ''),
+      homeTeamName: String(candidate.home ?? ''), awayTeamName: String(candidate.away ?? ''),
+    };
+    const league = autoLeagueEligibility(fixture);
+    if (!league.eligible) { skip(summary, league.reason); continue; }
+    summary.eligible += 1;
+    const excluded = await db.prepare('SELECT fixture_id FROM monitor_fixture_exclusions WHERE fixture_id=? AND active=1').bind(fixture.providerFixtureId).first<{ fixture_id: string }>();
+    if (excluded) { skip(summary, 'EXCLUDED'); continue; }
+    const identity = await writeGoalFixtureIdentity(db, fixture);
+    if (identity.status === 'REJECTED') { skip(summary, identity.reason); continue; }
+    if (identity.status === 'CONFLICT') { summary.conflicts += 1; skip(summary, identity.reason); continue; }
+    if (identity.status === 'CREATED') summary.created += 1; else summary.existing += 1;
+    const existing = await db.prepare('SELECT fixture_id,status,monitor_source FROM fixture_bookmarks WHERE fixture_id=?').bind(fixture.providerFixtureId).first<{ fixture_id: string; status: string; monitor_source: string }>();
+    // A manually removed or manually created bookmark is intentional user
+    // state. Never reactivate/overwrite it from AUTO_FORM.
+    if (existing) { skip(summary, existing.status === 'removed' ? 'BOOKMARK_REMOVED' : 'BOOKMARK_EXISTS'); continue; }
+    await db.prepare(`INSERT INTO fixture_bookmarks (fixture_id,home,away,league,country,kickoff_utc,bookmarked_at,reason,related_team_id,related_team_name,status,monitor_source,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,'waiting','auto_form',?)`).bind(
+      fixture.providerFixtureId, fixture.homeTeamName || 'Home', fixture.awayTeamName || 'Away', fixture.leagueName || '', fixture.country || '', fixture.kickoffUtc,
+      input.selectedAt, `auto_form;form_run:${input.runId};core_fixture:${identity.coreFixtureId}`, String(candidate.teamId ?? ''), String(candidate.team ?? ''), input.selectedAt,
+    ).run();
+    summary.bookmarked += 1;
+  }
+  return summary;
 }
 
 function numberValue(value: unknown) {
@@ -124,6 +167,7 @@ export async function POST(request: Request) {
     kickoffUtc: team.fixture.kickoffUtc,
     kickoffJst: team.fixture.kickoffJst,
     league: team.fixture.league,
+    leagueId: team.fixture.leagueId ?? '',
     country: team.fixture.country,
     fixtureId: team.fixture.id,
     // Candidate odds and the cross-provider bridge require the original fixture
@@ -163,5 +207,16 @@ export async function POST(request: Request) {
     typed.error = 1;
     console.error('typed form dual-write failed; raw form run remains saved', error);
   }
-  return Response.json({ candidates, excludedByRecentForm, excludedCount: excludedByRecentForm.length, checkedTeams: checked.length, failedTeams, apiRequests, retryCount, outcomeCounts, runId, saved, typed });
+  let autoForm: AutoSummary | null = null;
+  if (saved) try {
+    const db = (env as unknown as { DB: D1Database }).DB;
+    autoForm = await saveAutoFormBookmarks(db, { runId, selectedAt: createdAt, candidates });
+  } catch (error) {
+    // Raw history is preserved even if a local DB write has an infrastructure
+    // failure. The failure is visible in the response instead of becoming a
+    // silent partial AUTO admission.
+    console.error('AUTO_FORM identity/bookmark write failed; raw form run remains saved', error);
+    autoForm = { eligible: 0, created: 0, existing: 0, bookmarked: 0, skipped: { AUTO_WRITE_ERROR: 1 }, conflicts: 0 };
+  }
+  return Response.json({ candidates, excludedByRecentForm, excludedCount: excludedByRecentForm.length, checkedTeams: checked.length, failedTeams, apiRequests, retryCount, outcomeCounts, runId, saved, typed, autoForm });
 }
