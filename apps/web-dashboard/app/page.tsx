@@ -304,11 +304,28 @@ function UpcomingBoard({ fixtures, loading, onRest, bookmarks, onBookmark }: { f
 
 function BookmarkPanel({bookmarks,exclusions,matches,message,onRemove,onRestoreMonitoring}:{bookmarks:Bookmark[];exclusions:MonitorExclusion[];matches:Record<string,LiveMatch>;message:string;onRemove:(id:string)=>Promise<void>;onRestoreMonitoring:(id:string)=>Promise<void>}) {
   const excludedIds=new Set(exclusions.map(row=>row.fixtureId));
-  return <section className="bookmark-panel"><div className="bookmark-heading"><div><span>BOOKMARKS</span><strong>{bookmarks.length}</strong></div><small>{message||'kickoff 3分前から自動Socket監視'}</small></div><div className="bookmark-list">{bookmarks.length?bookmarks.map(b=><article key={b.fixtureId}><div><b>{b.home} vs {b.away}</b><small>{b.country} · {b.league}</small></div><time>{new Date(b.kickoffUtc).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'})}</time><span className={`bookmark-status ${excludedIds.has(b.fixtureId)?'excluded':b.status}`}>{excludedIds.has(b.fixtureId)?'監視除外中':matches[b.fixtureId]?.subscriptionState??b.status}</span>{b.relatedTeamName&&<em>好調: {b.relatedTeamName}</em>}{excludedIds.has(b.fixtureId)&&<button onClick={()=>void onRestoreMonitoring(b.fixtureId)}>監視に戻す</button>}<button onClick={()=>void onRemove(b.fixtureId)}>Bookmarkを外す</button></article>):<p>Bookmarkはまだありません</p>}</div>{exclusions.length>0&&<div className="monitor-exclusion-list"><span>監視除外リスト（Mac復帰・再読込後も維持）</span>{exclusions.map(row=><button key={row.fixtureId} onClick={()=>void onRestoreMonitoring(row.fixtureId)}>{row.home||row.fixtureId} {row.away?`vs ${row.away}`:''} · 監視に戻す</button>)}</div>}</section>;
+  const dates=useMemo(()=>[...new Set(bookmarks.map(bookmarkDate).filter(Boolean))].sort(),[bookmarks]);
+  const [selectedDate,setSelectedDate]=useState('');
+  const activeDate=dates.includes(selectedDate)?selectedDate:(dates[0]??'');
+  const visibleBookmarks=bookmarks.filter(bookmark=>bookmarkDate(bookmark)===activeDate).sort((a,b)=>Date.parse(a.kickoffUtc)-Date.parse(b.kickoffUtc));
+  return <section className="bookmark-panel"><div className="bookmark-heading"><div><span>BOOKMARKS</span><strong>{bookmarks.length}</strong></div><small>{message||'kickoff 3分前から自動Socket監視'}</small></div>{dates.length>0&&<label className="bookmark-date-filter">表示日 <select value={activeDate} onChange={event=>setSelectedDate(event.target.value)}>{dates.map(date=><option key={date} value={date}>{formatBookmarkDate(date)}</option>)}</select><small>開始時刻順（00:00 → 23:59）</small></label>}<div className="bookmark-list">{bookmarks.length?visibleBookmarks.map(b=><article key={b.fixtureId}><div><b>{b.home} vs {b.away}</b><small>{b.country} · {b.league}</small></div><time>{new Date(b.kickoffUtc).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'})}</time><span className={`bookmark-status ${excludedIds.has(b.fixtureId)?'excluded':b.status}`}>{excludedIds.has(b.fixtureId)?'LIVE画面から非表示':matches[b.fixtureId]?.subscriptionState??b.status}</span>{b.relatedTeamName&&<em>好調: {b.relatedTeamName}</em>}{excludedIds.has(b.fixtureId)&&<button onClick={()=>void onRestoreMonitoring(b.fixtureId)}>LIVE画面へ戻す</button>}<button onClick={()=>void onRemove(b.fixtureId)}>Bookmarkを外す</button></article>):<p>{activeDate?'この日のBookmarkはありません':'Bookmarkはまだありません'}</p>}</div></section>;
+}
+
+function bookmarkDate(bookmark: Bookmark) {
+  const date=new Date(bookmark.kickoffUtc);
+  if (Number.isNaN(date.getTime())) return '';
+  const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(date);
+  const value=(type:string)=>parts.find(part=>part.type===type)?.value??'';
+  return `${value('year')}-${value('month')}-${value('day')}`;
+}
+
+function formatBookmarkDate(value: string) {
+  const [year,month,day]=value.split('-');
+  return `${year}年${month}月${day}日`;
 }
 
 function ManagementBoard(props: { bookmarks:Bookmark[]; exclusions:MonitorExclusion[]; matches:Record<string,LiveMatch>; message:string; onRemove:(id:string)=>Promise<void>; onRestoreMonitoring:(id:string)=>Promise<void>; onApplySavedAuto:()=>Promise<void>; applyingSavedAuto:boolean }) {
-  return <section className="management-stage"><div className="management-intro"><span>MANAGEMENT</span><h1>Bookmark・監視対象外・保存済みデータ</h1><p>LIVE監視中に常時見る必要のない管理項目をここへまとめています。履歴データは削除されません。</p><button className="secondary" disabled={props.applyingSavedAuto} onClick={()=>void props.onApplySavedAuto()}>{props.applyingSavedAuto?'AUTO監視へ反映中…':'保存済み調子分析をAUTO監視へ反映（REST 0）'}</button><small>最新の保存済みform候補だけを、正式GOAL league IDのallowlistで再判定します。GOAL APIは呼びません。</small></div><BookmarkPanel {...props} /><div className="management-links"><a href="/live-history"><b>LIVE履歴</b><small>終了済み・途中終了をD1のsnapshotとsignalから確認</small></a><a href="/odds"><b>オッズ一覧</b><small>保存したオッズ取得履歴</small></a><a href="/analysis"><b>分析データ</b><small>AI分析用JSON・結果データ</small></a><a href="/form-history"><b>調子分析履歴</b><small>過去の直近5試合分析</small></a></div></section>;
+  return <section className="management-stage"><div className="management-intro"><span>MANAGEMENT</span><h1>Bookmark・監視対象外・保存済みデータ</h1><p>LIVE監視中に常時見る必要のない管理項目をここへまとめています。履歴データは削除されません。</p><button className="secondary" disabled={props.applyingSavedAuto} onClick={()=>void props.onApplySavedAuto()}>{props.applyingSavedAuto?'AUTO監視へ反映中…':'保存済み調子分析をAUTO監視へ反映（REST 0）'}</button><small>最新の保存済みform候補だけを、正式GOAL league IDのallowlistで再判定します。GOAL APIは呼びません。</small></div><BookmarkPanel {...props} /><div className="management-links"><a href="/live-history"><b>LIVE履歴</b><small>終了済み・途中終了をD1のsnapshotとsignalから確認</small></a><a href="/odds"><b>オッズ一覧</b><small>保存したオッズ取得履歴</small></a><a href="/analysis"><b>分析データ</b><small>AI分析用JSON・結果データ</small></a><a href="/form-history"><b>調子分析履歴</b><small>過去の直近5試合分析</small></a><a href="/monitor-exclusions"><b>監視対象外リスト</b><small>Bookmarkを残したままLIVE画面から隠した試合</small></a></div></section>;
 }
 
 function isSelectedLeague(fixture: UpcomingFixture) {
@@ -317,8 +334,8 @@ function isSelectedLeague(fixture: UpcomingFixture) {
   const exact: Record<string, string[]> = {
     england: ['premier league', 'championship', 'league one', 'league two', 'efl league one', 'efl league two'],
     spain: ['la liga', 'laliga', 'primera division', 'segunda division', 'la liga 2', 'laliga2', 'primera federacion', 'primera rfef', 'primera division rfef'],
-    italy: ['serie a', 'serie b', 'coppa italia'],
-    germany: ['bundesliga', '2. bundesliga'],
+    italy: ['serie a', 'serie b', 'serie c', 'coppa italia'],
+    germany: ['bundesliga', '2. bundesliga', '3. liga', '3 liga'],
     france: ['ligue 1', 'ligue 2'],
     iran: ['persian gulf pro league', 'pro league'],
     'saudi arabia': ['saudi league', 'pro league', 'saudi pro league', 'first division', 'division 1', '1st division', 'first league', 'yelo league'],
@@ -328,8 +345,8 @@ function isSelectedLeague(fixture: UpcomingFixture) {
     belgium: ['first division a', 'pro league'],
     switzerland: ['super league'],
     scotland: ['premiership'],
-    turkey: ['1. lig', '1 lig'],
-    turkiye: ['1. lig', '1 lig'],
+    turkey: ['super lig', 'superlig', '1. lig', '1 lig'],
+    turkiye: ['super lig', 'superlig', '1. lig', '1 lig'],
     qatar: ['stars league', 'qatar stars league'],
     algeria: ['ligue 1'],
     poland: ['ekstraklasa', 'i liga', '1. liga', 'liga i'],
@@ -348,8 +365,17 @@ function isSelectedLeague(fixture: UpcomingFixture) {
     'korea republic': ['k league 1', 'k league 2'],
     thailand: ['thai league 1', 'league 1'],
     indonesia: ['liga 1', 'league 1'],
-    norway: ['1st division', '1. division', 'division 1', 'obos-ligaen', 'obos ligaen'],
-    sweden: ['superettan'],
+    norway: ['eliteserien', '1st division', '1. division', 'division 1', 'obos-ligaen', 'obos ligaen'],
+    sweden: ['allsvenskan', 'superettan'],
+    albania: ['kategoria superiore', '1st division', '1. division', 'first division'],
+    usa: ['major league soccer', 'mls'],
+    'united states': ['major league soccer', 'mls'],
+    mexico: ['liga mx'],
+    portugal: ['primeira liga', 'liga portugal', 'liga portugal 2', 'liga portugal 2 sabseg'],
+    romania: ['superliga', 'liga i'],
+    serbia: ['superliga'],
+    slovakia: ['nike liga', 'fortuna liga'],
+    slovenia: ['1. snl', '1 snl', 'prva liga'],
   };
   // UEFA competitions can be returned as Europe/World depending on the
   // provider feed, so they are intentionally league-name based.
