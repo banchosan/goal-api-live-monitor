@@ -189,7 +189,12 @@ export class GoalApiCollector {
     fixture.lastGapReportedAt = null;
     if (this.connection) { this.connection.firstMatchUpdateAt ??= receivedAt; this.connection.lastMatchUpdateAt = receivedAt; }
     await this.emit('match_update', fixture, message, { source: 'websocket', receivedAt, providerTimestamp: providerTimestamp(data) });
-    if (TERMINAL.has(nextStatus.toUpperCase()) || String(data.match_live) === '0') await this.finishFixture(fixture, message);
+    // `match_live=0` is not a terminal signal on its own. GOAL can
+    // transiently roll an in-progress fixture back to NOT_STARTED with an
+    // empty minute/score payload; keep the subscription so the following
+    // normal update is still received. Only the provider's explicit terminal
+    // statuses may end a fixture.
+    if (TERMINAL.has(nextStatus.toUpperCase())) await this.finishFixture(fixture, message);
   }
 
   subscribe(fixtureId, reconnect, reason = reconnect ? 'socket_reconnect' : 'initial_subscribe') {
