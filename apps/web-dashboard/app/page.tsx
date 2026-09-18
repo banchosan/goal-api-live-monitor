@@ -21,22 +21,28 @@ type MonitorEvent = { sessionId: string; fixtureId: string; eventType: string; r
 type Bookmark = { fixtureId:string;home:string;away:string;league:string;country:string;kickoffUtc:string;reason:string;relatedTeamName?:string|null;status:'waiting'|'monitoring'|'finished'|'removed';updatedAt:string };
 type MonitorExclusion = { fixtureId:string;home:string;away:string;reason:string;excludedAt:string;updatedAt:string };
 
-function hasStats(value: Stat[] | null | undefined) { return Boolean(value?.length); }
 function checkpointFallback(match: LiveMatch, history: Partial<LiveMatch>): LiveMatch {
   // The current socket frame remains authoritative for current score, status,
   // and statistics. Persisted history only fills the four display checkpoints
   // that an already-running older Collector cannot expose in its memory.
   if (!match.stats.length) return { ...match, ...history, snapshots: match.snapshots, selectedSnapshotId: match.selectedSnapshotId } as LiveMatch;
+  // A history response deliberately includes null for a target that has not
+  // happened yet. Prefer that explicit null over an old Collector's early
+  // in-memory candidate (for example, 46' being incorrectly shown as 70').
+  const hasHistory = (key: keyof LiveMatch) => Object.prototype.hasOwnProperty.call(history, key);
+  const checkpoint = (statsKey: keyof LiveMatch, minuteKey: keyof LiveMatch, currentStats: Stat[] | null, currentMinute: number | null): [Stat[] | null, number | null] => hasHistory(statsKey)
+    ? [history[statsKey] as Stat[] | null, history[minuteKey] as number | null]
+    : [currentStats, currentMinute];
+  const [minute65Stats, minute65] = checkpoint('minute65Stats', 'minute65', match.minute65Stats ?? null, match.minute65 ?? null);
+  const [minute70Stats, minute70] = checkpoint('minute70Stats', 'minute70', match.minute70Stats ?? null, match.minute70 ?? null);
+  const [minute75Stats, minute75] = checkpoint('minute75Stats', 'minute75', match.minute75Stats ?? null, match.minute75 ?? null);
+  const [minute80Stats, minute80] = checkpoint('minute80Stats', 'minute80', match.minute80Stats ?? null, match.minute80 ?? null);
   return {
     ...match,
-    minute65Stats: hasStats(match.minute65Stats) ? match.minute65Stats : history.minute65Stats ?? null,
-    minute65: match.minute65 ?? history.minute65 ?? null,
-    minute70Stats: hasStats(match.minute70Stats) ? match.minute70Stats : history.minute70Stats ?? null,
-    minute70: match.minute70 ?? history.minute70 ?? null,
-    minute75Stats: hasStats(match.minute75Stats) ? match.minute75Stats : history.minute75Stats ?? null,
-    minute75: match.minute75 ?? history.minute75 ?? null,
-    minute80Stats: hasStats(match.minute80Stats) ? match.minute80Stats : history.minute80Stats ?? null,
-    minute80: match.minute80 ?? history.minute80 ?? null,
+    minute65Stats, minute65,
+    minute70Stats, minute70,
+    minute75Stats, minute75,
+    minute80Stats, minute80,
   };
 }
 
