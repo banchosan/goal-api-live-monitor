@@ -13,8 +13,10 @@ type UpcomingFixture = { id: string; league: string; leagueId?: string; country:
 type FormCandidate = { kickoffUtc: string; kickoffJst: string; league: string; country: string; fixtureId: string; home:string; away:string; homeTeamId:string; awayTeamId:string; teamId:string; team: string; side: 'home' | 'away'; opponent: string; wins: number; draws: number; last5: { result: string; score: string; opponent: string; fixtureId: string }[] };
 type Stat = { type: string; home: string | number | null; away: string | number | null };
 type ManualSnapshot = { id: string; status: string; capturedAt: string; stats: Stat[] };
-type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; lastReceivedAt?: string; updates: number; ended?: boolean; htStats?: Stat[] | null; daCutoffStats?: Stat[] | null; daCutoffMinute?: number | null; koCutoffStats?: Stat[] | null; koCutoffMinute?: number | null; subscriptionState?: string; subscribedAt?: string | null; initialUpdateResubscribeAttempts?: number; snapshots: ManualSnapshot[]; selectedSnapshotId?: string };
+type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; lastReceivedAt?: string; updates: number; ended?: boolean; htStats?: Stat[] | null; daCutoffStats?: Stat[] | null; daCutoffMinute?: number | null; koCutoffStats?: Stat[] | null; koCutoffMinute?: number | null; minute70Stats?: Stat[] | null; minute70?: number | null; minute75Stats?: Stat[] | null; minute75?: number | null; historyFallback?: boolean; subscriptionState?: string; subscribedAt?: string | null; initialUpdateResubscribeAttempts?: number; snapshots: ManualSnapshot[]; selectedSnapshotId?: string };
 type LiveSignal = { id:string; fixtureId:string; ruleId:string; ruleVersion:string; signalSide:string|null; triggeredAt:string; detectedMinute:number|null; feature?:Record<string,unknown>|null };
+type SavedForm = { runId:string; createdAt:string; home: FormResult[] | null; away: FormResult[] | null };
+type FormResult = { result:string; score:string; opponent:string; fixtureId:string };
 type MonitorEvent = { sessionId: string; fixtureId: string; eventType: string; receivedAt: string; status?: string; home?: string; away?: string; homeScore?: string; awayScore?: string; payload: unknown };
 type Bookmark = { fixtureId:string;home:string;away:string;league:string;country:string;kickoffUtc:string;reason:string;relatedTeamName?:string|null;status:'waiting'|'monitoring'|'finished'|'removed';updatedAt:string };
 type MonitorExclusion = { fixtureId:string;home:string;away:string;reason:string;excludedAt:string;updatedAt:string };
@@ -39,6 +41,7 @@ export default function Home() {
   const [bookmarkMessage, setBookmarkMessage] = useState('');
   const [applyingSavedAuto, setApplyingSavedAuto] = useState(false);
   const [liveSignals, setLiveSignals] = useState<Record<string, LiveSignal[]>>({});
+  const [liveForms, setLiveForms] = useState<Record<string, SavedForm>>({});
   const sessionIdRef = useRef('');
   const matchesRef = useRef<Record<string, LiveMatch>>({});
   const hiddenFixtureIdsRef = useRef(new Set<string>());
@@ -51,8 +54,8 @@ export default function Home() {
 
   async function loadBookmarks() { try { const response=await fetch('/api/bookmarks',{cache:'no-store'}); if(response.ok)setBookmarks((await response.json()).bookmarks??[]); } catch {} }
   async function loadMonitorExclusions() { try { const response=await fetch('/api/monitor-exclusions',{cache:'no-store'}); if(response.ok){const rows=(await response.json()).exclusions??[];excludedFixtureIdsRef.current=new Set(rows.map((row:MonitorExclusion)=>String(row.fixtureId)));setMonitorExclusions(rows);} } catch {} }
-  async function bookmarkFixture(fixture: { id:string;home:string;away:string;league:string;country:string;kickoffUtc?:string }, reason='manual', relatedTeamId?:string, relatedTeamName?:string) {
-    try { const response=await fetch('/api/bookmarks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fixtureId:fixture.id,home:fixture.home,away:fixture.away,league:fixture.league,country:fixture.country,kickoffUtc:fixture.kickoffUtc??new Date().toISOString(),reason,relatedTeamId,relatedTeamName})}); const data=await response.json(); if(!response.ok)throw new Error(data.error);setBookmarkMessage(`${fixture.home} vs ${fixture.away}をBookmarkしました`);await loadBookmarks(); }
+  async function bookmarkFixture(fixture: { id:string;home:string;away:string;league:string;country:string;kickoffUtc?:string;leagueId?:string;homeTeamId?:string;awayTeamId?:string }, reason='manual', relatedTeamId?:string, relatedTeamName?:string) {
+    try { const response=await fetch('/api/bookmarks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fixtureId:fixture.id,home:fixture.home,away:fixture.away,league:fixture.league,country:fixture.country,kickoffUtc:fixture.kickoffUtc??new Date().toISOString(),leagueId:fixture.leagueId,homeTeamId:fixture.homeTeamId,awayTeamId:fixture.awayTeamId,reason,relatedTeamId,relatedTeamName})}); const data=await response.json(); if(!response.ok)throw new Error(data.error);const identityNote=data.identity?.status==='CREATED'?' · typed identity保存済み':data.identity?.status==='EXISTING'?' · typed identity既存':data.identity?.status?' · typed identity保留':'';setBookmarkMessage(`${fixture.home} vs ${fixture.away}をBookmarkしました${identityNote}`);await loadBookmarks(); }
     catch(error){setBookmarkMessage(error instanceof Error?error.message:'Bookmark失敗')}
   }
   async function removeBookmark(fixtureId:string){await fetch(`/api/bookmarks?fixtureId=${encodeURIComponent(fixtureId)}`,{method:'DELETE'});await loadBookmarks()}
@@ -190,6 +193,33 @@ export default function Home() {
     });
   }
   useEffect(() => { matchesRef.current = matches; }, [matches]);
+  useEffect(() => {
+    const fixtureIds = Object.keys(matches); if (!fixtureIds.length) return;
+    let cancelled = false;
+    void fetch(`/api/live-card-history?fixtureIds=${encodeURIComponent(fixtureIds.join(','))}`, { cache: 'no-store' })
+      .then(async (response) => response.ok ? response.json() : { fixtures: {} })
+      .then((data) => {
+        if (cancelled) return;
+        const saved = data.fixtures as Record<string, Partial<LiveMatch>>;
+        setMatches((current) => Object.fromEntries(Object.entries(current).map(([fixtureId, match]) => {
+          const history = saved[fixtureId];
+          // A live socket update always wins. Saved data is only a display
+          // fallback when the new/restarted subscription has no update yet.
+          return [fixtureId, history && !match.stats.length ? { ...match, ...history, snapshots: match.snapshots, selectedSnapshotId: match.selectedSnapshotId } : match];
+        })));
+      }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [Object.keys(matches).sort().join(',')]);
+  useEffect(() => {
+    const fixtureIds = Object.keys(matches);
+    if (!fixtureIds.length) { setLiveForms({}); return; }
+    let cancelled = false;
+    void fetch(`/api/live-form?fixtureIds=${encodeURIComponent(fixtureIds.join(','))}`, { cache: 'no-store' })
+      .then(async (response) => response.ok ? response.json() : { forms: {} })
+      .then((data) => { if (!cancelled) setLiveForms(data.forms ?? {}); })
+      .catch(() => { if (!cancelled) setLiveForms({}); });
+    return () => { cancelled = true; };
+  }, [Object.keys(matches).sort().join(',')]);
   useEffect(() => { void loadBookmarks(); void loadMonitorExclusions(); const timer=window.setInterval(()=>{void loadBookmarks();void loadMonitorExclusions();},5000); return()=>window.clearInterval(timer); }, []);
   useEffect(() => {
     let cancelled = false;
@@ -199,7 +229,7 @@ export default function Home() {
         const data = await response.json(); if (cancelled) return;
         sessionIdRef.current = data.sessionId ?? ''; setCollectorRequests(Number(data.goalApiRequests ?? 0));
         setFrameCount((data.fixtures ?? []).reduce((sum: number, fixture: LiveMatch) => sum + Number(fixture.updates ?? 0), 0));
-        if (data.fixtures?.length) { const hidden=new Set([...hiddenFixtureIdsRef.current,...excludedFixtureIdsRef.current]); setMatches((current) => Object.fromEntries(visibleCollectorFixtures(data.fixtures as LiveMatch[], hidden).map((fixture) => [fixture.id, { ...fixture, updatedAt: fixture.updatedAt ? new Date(fixture.updatedAt).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' }) : undefined, snapshots: current[fixture.id]?.snapshots ?? [], selectedSnapshotId: current[fixture.id]?.selectedSnapshotId }]))); }
+        if (data.fixtures?.length) { const hidden=new Set([...hiddenFixtureIdsRef.current,...excludedFixtureIdsRef.current]); setMatches((current) => Object.fromEntries(visibleCollectorFixtures(data.fixtures as LiveMatch[], hidden).map((fixture) => { const prior=current[fixture.id]; const saved=(!fixture.stats?.length&&prior?.historyFallback)?prior:null; return [fixture.id, { ...fixture, ...(saved ? { status:saved.status,stats:saved.stats,updatedAt:saved.updatedAt,lastReceivedAt:saved.lastReceivedAt,updates:saved.updates,ended:saved.ended,htStats:saved.htStats,daCutoffStats:saved.daCutoffStats,daCutoffMinute:saved.daCutoffMinute,koCutoffStats:saved.koCutoffStats,koCutoffMinute:saved.koCutoffMinute,minute70Stats:saved.minute70Stats,minute70:saved.minute70,minute75Stats:saved.minute75Stats,minute75:saved.minute75,historyFallback:true } : { updatedAt: fixture.updatedAt ? new Date(fixture.updatedAt).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' }) : undefined }), snapshots: prior?.snapshots ?? [], selectedSnapshotId: prior?.selectedSnapshotId }]; }))); }
         if (data.fixtures?.length && data.sessionId && Date.now() - lastSignalPollAtRef.current >= 5_000) { lastSignalPollAtRef.current=Date.now(); const fixtureIds=encodeURIComponent((data.fixtures as LiveMatch[]).map((fixture)=>fixture.id).join(',')); const sessionId=encodeURIComponent(String(data.sessionId)); void fetch(`/api/live-signals?fixtureIds=${fixtureIds}&sessionId=${sessionId}`,{cache:'no-store'}).then(async(response)=>{if(!response.ok)return;const signalBody=await response.json();if(cancelled)return;const grouped:Record<string,LiveSignal[]>={};for(const signal of signalBody.signals??[])(grouped[signal.providerFixtureId]??=[]).push(signal);setLiveSignals(grouped);}).catch(()=>undefined); }
         if (data.active && data.connectionState === 'live') { setConnection('live'); setMessage(`${data.fixtures.length}試合を独立Collectorで監視中。ブラウザを再読込しても収集は継続します。`); }
         else if (data.active) { setConnection('connecting'); setMessage(data.connectionState === 'reconnect_wait' ? `Socket切断を検知。再接続待機中（試行 ${data.reconnectAttempt}）` : 'CollectorがWebSocketへ接続中…'); }
@@ -232,7 +262,7 @@ export default function Home() {
         </div>
       </aside>
       <section className="score-stage">{!Object.keys(matches).length && <div className="hero-empty"><div className="pulse-rings"><span /><span /><b>⚽</b></div><h2>試合を選択してください</h2><p>左のライブ一覧から最大25試合を選び、1本のSocketで同時監視できます。</p><div className="flow"><span>LIVE LIST<small>通常2 REST</small></span><i>→</i><span>SELECT<small>最大25試合</small></span><i>→</i><span>WEBSOCKET<small>更新消費 0</small></span></div></div>}
-        <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} signals={liveSignals[m.id]??[]} onCapture={() => captureSnapshot(m.id)} onSelectSnapshot={(snapshotId) => selectSnapshot(m.id, snapshotId)} onRemove={() => m.ended ? void hideFinishedFixture(m.id) : void removeFromMonitoring(m.id)} onRefresh={() => void refreshSubscription(m.id)} />)}</div>
+        <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} form={liveForms[m.id] ?? null} signals={liveSignals[m.id]??[]} onCapture={() => captureSnapshot(m.id)} onSelectSnapshot={(snapshotId) => selectSnapshot(m.id, snapshotId)} onRemove={() => m.ended ? void hideFinishedFixture(m.id) : void removeFromMonitoring(m.id)} onRefresh={() => void refreshSubscription(m.id)} />)}</div>
       </section>
     </div> : viewMode === 'upcoming' ? <UpcomingBoard fixtures={upcomingFixtures} loading={upcomingLoading} onRest={(count) => setRestCount((value) => value + count)} bookmarks={bookmarks} onBookmark={bookmarkFixture} /> : <ManagementBoard bookmarks={bookmarks} exclusions={monitorExclusions} matches={matches} message={bookmarkMessage} onRemove={removeBookmark} onRestoreMonitoring={restoreMonitoring} onApplySavedAuto={applySavedAutoBookmarks} applyingSavedAuto={applyingSavedAuto} />}
   </main>;
@@ -336,15 +366,15 @@ function isSelectedLeague(fixture: UpcomingFixture) {
     spain: ['la liga', 'laliga', 'primera division', 'segunda division', 'la liga 2', 'laliga2', 'primera federacion', 'primera rfef', 'primera division rfef'],
     italy: ['serie a', 'serie b', 'serie c', 'coppa italia'],
     germany: ['bundesliga', '2. bundesliga', '3. liga', '3 liga'],
-    france: ['ligue 1', 'ligue 2'],
+    france: ['ligue 1', 'ligue 2', 'national', 'national 1', 'championnat national', 'national u19', 'u19 national'],
     iran: ['persian gulf pro league', 'pro league'],
     'saudi arabia': ['saudi league', 'pro league', 'saudi pro league', 'first division', 'division 1', '1st division', 'first league', 'yelo league'],
     bulgaria: ['first league'],
     austria: ['bundesliga'],
     denmark: ['superliga', '1st division', '1. division', 'division 1'],
-    belgium: ['first division a', 'pro league'],
+    belgium: ['first division a', 'pro league', 'challenger pro league'],
     switzerland: ['super league'],
-    scotland: ['premiership'],
+    scotland: ['premiership', 'championship', 'league one', 'league two'],
     turkey: ['super lig', 'superlig', '1. lig', '1 lig'],
     turkiye: ['super lig', 'superlig', '1. lig', '1 lig'],
     qatar: ['stars league', 'qatar stars league'],
@@ -353,7 +383,7 @@ function isSelectedLeague(fixture: UpcomingFixture) {
     estonia: ['esiliiga a'],
     armenia: ['premier league'],
     egypt: ['premier league'],
-    hungary: ['nb i', 'nb 1'],
+    hungary: ['nb i', 'nb 1', 'otp bank liga', 'bank liga'],
     netherlands: ['eredivisie', 'eerste divisie'],
     ecuador: ['liga pro', 'serie a', 'primera a'],
     brazil: ['serie a', 'serie b', 'brasileirao serie a', 'brasileirao serie b'],
@@ -363,19 +393,36 @@ function isSelectedLeague(fixture: UpcomingFixture) {
     'south korea': ['k league 1', 'k league 2'],
     korea: ['k league 1', 'k league 2'],
     'korea republic': ['k league 1', 'k league 2'],
-    thailand: ['thai league 1', 'league 1'],
+    thailand: ['thai league 1', 'league 1', 'thai league 2', 'league 2'],
     indonesia: ['liga 1', 'league 1'],
     norway: ['eliteserien', '1st division', '1. division', 'division 1', 'obos-ligaen', 'obos ligaen'],
-    sweden: ['allsvenskan', 'superettan'],
+    sweden: ['allsvenskan', 'superettan', 'ettan norra', 'ettan sodra', 'ettan'],
     albania: ['kategoria superiore', '1st division', '1. division', 'first division'],
     usa: ['major league soccer', 'mls'],
     'united states': ['major league soccer', 'mls'],
     mexico: ['liga mx'],
     portugal: ['primeira liga', 'liga portugal', 'liga portugal 2', 'liga portugal 2 sabseg'],
     romania: ['superliga', 'liga i'],
-    serbia: ['superliga'],
-    slovakia: ['nike liga', 'fortuna liga'],
-    slovenia: ['1. snl', '1 snl', 'prva liga'],
+    serbia: ['superliga', 'prva liga'],
+    slovakia: ['nike liga', 'fortuna liga', '2. liga', '2 liga'],
+    slovenia: ['1. snl', '1 snl', 'prva liga', '2. snl', '2 snl'],
+    chile: ['liga de primera', 'primera division'],
+    china: ['super league', 'chinese super league'],
+    'china pr': ['super league', 'chinese super league'],
+    croatia: ['football league', 'croatian football league', 'hnl', '1. hnl'],
+    cyprus: ['first division', '1st division', 'division 1'],
+    finland: ['veikkausliiga', 'ykkonen', 'ykkosliiga'],
+    peru: ['liga 1', 'primera division'],
+    venezuela: ['primera division', 'liga futve'],
+    paraguay: ['primera division', 'division profesional'],
+    ireland: ['first division', '1st division', 'division 1'],
+    'republic of ireland': ['first division', '1st division', 'division 1'],
+    'united arab emirates': ['division 1', '1st division', 'first division', 'uae division 1'],
+    uae: ['division 1', '1st division', 'first division', 'uae division 1'],
+    latvia: ['virsliga', '1st division', 'first division', 'division 1'],
+    'northern ireland': ['premiership', 'championship'],
+    wales: ['cymru premier', 'premier league', 'premiership', 'championship', 'cymru north', 'cymru south'],
+    greece: ['super league', 'super league 1', 'superleague'],
   };
   // UEFA competitions can be returned as Europe/World depending on the
   // provider feed, so they are intentionally league-name based.
@@ -384,12 +431,13 @@ function isSelectedLeague(fixture: UpcomingFixture) {
     'uefa europa league', 'europa league',
     'uefa europa conference league', 'europa conference league', 'conference league',
   ];
-  return (exact[country] ?? []).includes(league) || uefaCompetitions.includes(league);
+  const afcCompetitions = ['afc champions league', 'afc champions league elite', 'afc champions league two'];
+  return (exact[country] ?? []).includes(league) || uefaCompetitions.includes(league) || afcCompetitions.includes(league);
 }
 
 function normalize(value: string) { return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase(); }
 
-function MatchCard({ match, signals, onCapture, onSelectSnapshot, onRemove, onRefresh }: { match: LiveMatch; signals: LiveSignal[]; onCapture: () => void; onSelectSnapshot: (id: string) => void; onRemove: () => void; onRefresh: () => void }) {
+function MatchCard({ match, form, signals, onCapture, onSelectSnapshot, onRemove, onRefresh }: { match: LiveMatch; form: SavedForm | null; signals: LiveSignal[]; onCapture: () => void; onSelectSnapshot: (id: string) => void; onRemove: () => void; onRefresh: () => void }) {
   const status = displayMatchMinute(match.status);
   const selectedSnapshot = match.snapshots.find((snapshot) => snapshot.id === match.selectedSnapshotId);
   const lastReceivedMs = Date.parse(match.lastReceivedAt ?? '');
@@ -398,12 +446,22 @@ function MatchCard({ match, signals, onCapture, onSelectSnapshot, onRemove, onRe
   const subscribedMs = Date.parse(match.subscribedAt ?? '');
   const providerSilent = match.subscriptionState === 'provider_silent';
   const initialResubscribeAttempts = match.initialUpdateResubscribeAttempts ?? 0;
-  return <article className="score-card"><div className="league-line"><span>{match.country} · {match.league}</span><span className="fixture-controls"><b>{status}</b>{!match.ended && <button className="refresh-fixture" onClick={onRefresh}>再subscribe</button>}<button onClick={onRemove}>{match.ended ? '一覧から外す' : '監視から外す'}</button></span></div><div className="scoreline"><div><span className="crest home">{match.home.slice(0, 2).toUpperCase()}</span><strong>{match.home}</strong></div><p><b>{match.homeScore}</b><i>–</i><b>{match.awayScore}</b></p><div><span className="crest away">{match.away.slice(0, 2).toUpperCase()}</span><strong>{match.away}</strong></div></div><div className={`update-line ${stale ? 'stale' : ''}`}><span className="live-pill">● {match.ended ? 'FINISHED' : stale ? 'UPDATE STALE' : waitingForProvider ? 'SUBSCRIBED' : 'LIVE'}</span><span>{match.updatedAt ? `Socket更新 ${match.updatedAt} JST · #${match.updates}${stale ? ' · provider更新停止を検知' : ''}` : waitingForProvider ? 'subscribe成功・最初のSocket更新（分数・stats）待ち' : 'subscribe応答待ち'}</span></div>
+  return <article className="score-card"><div className="league-line"><span>{match.country} · {match.league}</span><span className="fixture-controls"><b>{status}</b>{!match.ended && <button className="refresh-fixture" onClick={onRefresh}>再subscribe</button>}<button onClick={onRemove}>{match.ended ? '一覧から外す' : '監視から外す'}</button></span></div><div className="scoreline"><div><span className="crest home">{match.home.slice(0, 2).toUpperCase()}</span><div className="team-name-form"><strong>{match.home}</strong><FormStrip results={form?.home ?? null} /></div></div><p><b>{match.homeScore}</b><i>–</i><b>{match.awayScore}</b></p><div><span className="crest away">{match.away.slice(0, 2).toUpperCase()}</span><div className="team-name-form"><strong>{match.away}</strong><FormStrip results={form?.away ?? null} /></div></div></div><div className={`update-line ${stale ? 'stale' : ''}`}><span className="live-pill">● {match.historyFallback ? 'SAVED HISTORY' : match.ended ? 'FINISHED' : stale ? 'UPDATE STALE' : waitingForProvider ? 'SUBSCRIBED' : 'LIVE'}</span><span>{match.historyFallback ? `保存済みSocket履歴 · #${match.updates}` : match.updatedAt ? `Socket更新 ${match.updatedAt} JST · #${match.updates}${stale ? ' · provider更新停止を検知' : ''}` : waitingForProvider ? 'subscribe成功・最初のSocket更新（分数・stats）待ち' : 'subscribe応答待ち'}</span></div>
     <DangerousAttacksSignalPanel match={match} signals={signals} />
-    <div className="snapshot-panel"><div className="snapshot-actions"><button onClick={onCapture} disabled={!match.stats.length}>現在値をスナップ（REST 0）</button><span>{match.snapshots.length ? `${match.snapshots.length}件保存` : '好きな時点を保存できます'}</span></div>{match.snapshots.length > 0 && <div className="snapshot-tabs">{match.snapshots.map((snapshot) => <button className={snapshot.id === match.selectedSnapshotId ? 'active' : ''} onClick={() => onSelectSnapshot(snapshot.id)} key={snapshot.id}>{formatSnapshotStatus(snapshot.status)} <small>{snapshot.capturedAt}</small></button>)}</div>}</div>
+    <details className="snapshot-panel"><summary>SNAPSHOTS <small>70' / 75' checkpoint・手動スナップ</small></summary><div className="checkpoint-snapshot-grid"><CheckpointSnapshot label="70'" minute={match.minute70 ?? null} stats={match.minute70Stats ?? null} /><CheckpointSnapshot label="75'" minute={match.minute75 ?? null} stats={match.minute75Stats ?? null} /></div><div className="snapshot-actions"><button onClick={onCapture} disabled={!match.stats.length}>現在値をスナップ（REST 0）</button><span>{match.snapshots.length ? `${match.snapshots.length}件保存` : '好きな時点を保存できます'}</span></div>{match.snapshots.length > 0 && <div className="snapshot-tabs">{match.snapshots.map((snapshot) => <button className={snapshot.id === match.selectedSnapshotId ? 'active' : ''} onClick={() => onSelectSnapshot(snapshot.id)} key={snapshot.id}>{formatSnapshotStatus(snapshot.status)} <small>{snapshot.capturedAt}</small></button>)}</div>}</details>
     {selectedSnapshot && <SnapshotDeltaPanel match={match} snapshot={selectedSnapshot} />}
     {match.stats.length ? <div className="stats"><div className="stat-head"><span>HOME</span><b>CURRENT STATISTICS</b><span>AWAY</span></div>{match.stats.map((s, i) => { const unavailable = isGoalProviderPlaceholderZeroPair(s.type, s.home, s.away, match.status); return <div className="stat-row" key={`${s.type}-${i}`}><strong>{unavailable ? '—' : s.home ?? 'N/A'}</strong><span>{s.type}{unavailable ? '（GOAL API未提供）' : ''}</span><strong>{unavailable ? '—' : s.away ?? 'N/A'}</strong></div>; })}</div> : providerSilent ? <div className="waiting"><p>最初の更新が届かないため、自動再subscribeを{initialResubscribeAttempts}回試しました。GOAL APIの購読ストリームが無応答です。</p></div> : <div className="waiting"><span /><p>{initialResubscribeAttempts ? `最初の更新待ち（自動再subscribe ${initialResubscribeAttempts}/2）` : 'WebSocketの最初のmatch_updateを待っています'}</p></div>}
   </article>;
+}
+
+function FormStrip({ results }: { results: FormResult[] | null }) {
+  if (!results?.length) return <small className="live-form-unavailable">直近5試合: 保存なし</small>;
+  return <span className="live-form-strip" title="保存済みの直近5試合（左が古い試合）">{results.map((item, index) => <i key={`${item.fixtureId}-${index}`} className={item.result.toLowerCase()}>{item.result}</i>)}</span>;
+}
+
+function CheckpointSnapshot({ label, minute, stats }: { label: string; minute: number | null; stats: Stat[] | null }) {
+  const rows = ['Dangerous Attacks', 'On Target', 'Off Target', 'Corners'].map((type) => ({ type, home: statValue(stats ?? [], type, 'home'), away: statValue(stats ?? [], type, 'away') }));
+  return <section className="checkpoint-snapshot"><b>{label} {minute === null ? '待ち' : `${minute}'`}</b>{minute === null ? <small>target以前のSocket更新を待機</small> : rows.map((row) => <span key={row.type}><strong>{displayStat(row.home)}</strong><em>{row.type}</em><strong>{displayStat(row.away)}</strong></span>)}</section>;
 }
 
 function DangerousAttacksSignalPanel({ match, signals }: { match: LiveMatch; signals: LiveSignal[] }) {
@@ -424,7 +482,20 @@ function DangerousAttacksSignalPanel({ match, signals }: { match: LiveMatch; sig
   const koHomeHot=koHomeFired || (koCurrentHome !== null && koCurrentHome >= 20); const koAwayHot=koAwayFired || (koCurrentAway !== null && koCurrentAway >= 20);
   const koReady=koCurrentHome!==null&&koCurrentAway!==null; const koCheckpoint=match.koCutoffMinute??null;
   const koState=minute!==null&&minute>25?'判定終了':!koReady?'25分checkpoint待ち':'監視中';
-  return <><div className="snapshot-delta da-signal-panel"><div className="delta-title"><b>25' DANGEROUS ATTACKS SIGNAL</b><span>threshold DA 20</span></div><div className="stat-head"><span>HOME</span><b>{koCheckpoint===null?'checkpoint待ち':`${koCheckpoint}'時点`}</b><span>AWAY</span></div><div className="stat-row"><strong className={koHomeHot?'signal-fired':''}>{koCurrentHome===null?'—':`${koHomeHot?'🔥 ':''}${koCurrentHome}`}</strong><span>DA（25分まで）</span><strong className={koAwayHot?'signal-fired':''}>{koCurrentAway===null?'—':`${koAwayHot?'🔥 ':''}${koCurrentAway}`}</strong></div><div className="stat-row delta-row"><strong>{koHomeHot?'🔥 発火':'未発火'}</strong><span>DA 20以上</span><strong>{koAwayHot?'🔥 発火':'未発火'}</strong></div><small>Status: {koState}{minute!==null&&minute>25?'（表示値は25分以下の最終Socket snapshot）':koReady?` / HOME ${koHomeHot?'🔥 発火':'未発火'} / AWAY ${koAwayHot?'🔥 発火':'未発火'}`:''}</small></div><div className="snapshot-delta da-signal-panel"><div className="delta-title"><b>HT → 65' DANGEROUS ATTACKS SIGNAL</b><span>threshold +15</span></div><div className="stat-head"><span>HOME</span><b>{checkpointMinute===null?'checkpoint待ち':`${checkpointMinute}'まで`}</b><span>AWAY</span></div><div className="stat-row"><strong>{htHome===null?'—':htHome}</strong><span>HT DA</span><strong>{htAway===null?'—':htAway}</strong></div><div className="stat-row"><strong>{currentHome===null?'—':currentHome}</strong><span>DA（65分まで）</span><strong>{currentAway===null?'—':currentAway}</strong></div><div className="stat-row delta-row"><strong className={homeHot?'signal-fired':''}>{!baselineReady?'—':homeIncrease===null?'—':`${homeHot?'🔥 ':''}${signed(homeIncrease)}`}</strong><span>{homeHot?'15到達・発火':'increase / +15'}</span><strong className={awayHot?'signal-fired':''}>{!baselineReady?'—':awayIncrease===null?'—':`${awayHot?'🔥 ':''}${signed(awayIncrease)}`}</strong></div><small>Status: {state}{minute!==null&&minute>65?'（表示値は65分以下の最終Socket snapshot）':baselineReady?` / HOME ${homeHot?'🔥 発火':'未発火'} / AWAY ${awayHot?'🔥 発火':'未発火'}`:''}</small></div></>;
+  const koOnHome=statValue(match.koCutoffStats??[],'On Target','home'); const koOnAway=statValue(match.koCutoffStats??[],'On Target','away');
+  const koOffHome=statValue(match.koCutoffStats??[],'Off Target','home'); const koOffAway=statValue(match.koCutoffStats??[],'Off Target','away');
+  const currentOnHome=statValue(match.daCutoffStats??[],'On Target','home'); const currentOnAway=statValue(match.daCutoffStats??[],'On Target','away');
+  const currentOffHome=statValue(match.daCutoffStats??[],'Off Target','home'); const currentOffAway=statValue(match.daCutoffStats??[],'Off Target','away');
+  const cornersHome=statValue(match.daCutoffStats??[],'Corners','home'); const cornersAway=statValue(match.daCutoffStats??[],'Corners','away');
+  const htOnHome=statValue(match.htStats??[],'On Target','home'); const htOnAway=statValue(match.htStats??[],'On Target','away');
+  const htOffHome=statValue(match.htStats??[],'Off Target','home'); const htOffAway=statValue(match.htStats??[],'Off Target','away');
+  const htCornersHome=statValue(match.htStats??[],'Corners','home'); const htCornersAway=statValue(match.htStats??[],'Corners','away');
+  const homeCornersHot=cornersHome !== null && cornersHome >= 7; const awayCornersHot=cornersAway !== null && cornersAway >= 7;
+  return <><details className="snapshot-delta da-signal-panel" open><summary><b>25' DANGEROUS ATTACKS SIGNAL</b><span>threshold DA 20</span></summary><div className="stat-head"><span>HOME</span><b>{koCheckpoint===null?'checkpoint待ち':`${koCheckpoint}'時点`}</b><span>AWAY</span></div><SignalStatRow label="DA（25分まで）" home={koCurrentHome} away={koCurrentAway} homeHot={koHomeHot} awayHot={koAwayHot} /><SignalStatRow label="On Target" home={koOnHome} away={koOnAway} /><SignalStatRow label="Off Target" home={koOffHome} away={koOffAway} /><div className="stat-row delta-row"><strong>{koHomeHot?'🔥 発火':'未発火'}</strong><span>DA 20以上</span><strong>{koAwayHot?'🔥 発火':'未発火'}</strong></div><small>Status: {koState}{minute!==null&&minute>25?'（表示値は25分以下の最終Socket snapshot）':koReady?` / HOME ${koHomeHot?'🔥 発火':'未発火'} / AWAY ${koAwayHot?'🔥 発火':'未発火'}`:''}</small></details><details className="snapshot-delta da-signal-panel" open><summary><b>HT → 65' DANGEROUS ATTACKS SIGNAL</b><span>DA +15 / Total Corner 7</span></summary><div className="stat-head"><span>HOME</span><b>{checkpointMinute===null?'checkpoint待ち':`${checkpointMinute}'まで`}</b><span>AWAY</span></div><SignalStatRow label="HT DA" home={htHome} away={htAway} /><SignalStatRow label="DA（65分まで・HT比）" home={currentHome} away={currentAway} baseHome={htHome} baseAway={htAway} /><SignalStatRow label="On Target（65分まで・HT比）" home={currentOnHome} away={currentOnAway} baseHome={htOnHome} baseAway={htOnAway} /><SignalStatRow label="Off Target（65分まで・HT比）" home={currentOffHome} away={currentOffAway} baseHome={htOffHome} baseAway={htOffAway} /><SignalStatRow label="Corners（試合合計・65分時点）" home={cornersHome} away={cornersAway} baseHome={htCornersHome} baseAway={htCornersAway} homeHot={homeCornersHot} awayHot={awayCornersHot} /><div className="stat-row delta-row"><strong className={homeHot?'signal-fired':''}>{!baselineReady?'—':homeIncrease===null?'—':`${homeHot?'🔥 ':''}${signed(homeIncrease)}`}</strong><span>{homeHot?'15到達・発火':'increase / +15'}</span><strong className={awayHot?'signal-fired':''}>{!baselineReady?'—':awayIncrease===null?'—':`${awayHot?'🔥 ':''}${signed(awayIncrease)}`}</strong></div><div className="stat-row delta-row corner-threshold"><strong className={homeCornersHot?'signal-fired':''}>{cornersHome===null?'—':homeCornersHot?'🔥 7+':'未発火'}</strong><span>試合合計Corner 7以上</span><strong className={awayCornersHot?'signal-fired':''}>{cornersAway===null?'—':awayCornersHot?'🔥 7+':'未発火'}</strong></div><small>Status: {state}{minute!==null&&minute>65?'（表示値は65分以下の最終Socket snapshot）':baselineReady?` / HOME ${homeHot?'🔥 DA':''}${homeCornersHot?' 🔥 Corner':''}${!homeHot&&!homeCornersHot?' 未発火':''} / AWAY ${awayHot?'🔥 DA':''}${awayCornersHot?' 🔥 Corner':''}${!awayHot&&!awayCornersHot?' 未発火':''}`:''}</small></details></>;
+}
+
+function SignalStatRow({ label, home, away, baseHome = null, baseAway = null, homeHot = false, awayHot = false }: { label: string; home: number | null; away: number | null; baseHome?: number | null; baseAway?: number | null; homeHot?: boolean; awayHot?: boolean }) {
+  return <div className="stat-row"><strong className={homeHot?'signal-fired':''}>{statWithIncrease(home, baseHome, homeHot)}</strong><span>{label}</span><strong className={awayHot?'signal-fired':''}>{statWithIncrease(away, baseAway, awayHot)}</strong></div>;
 }
 
 function SnapshotDeltaPanel({ match, snapshot }: { match: LiveMatch; snapshot: ManualSnapshot }) {
@@ -461,4 +532,6 @@ function persistEvents(events: MonitorEvent[]) {
 
 function numeric(value: string | number | null) { const found = String(value ?? '').match(/-?\d+(?:\.\d+)?/); return found ? Number(found[0]) : null; }
 function statValue(stats: Stat[], type: string, side: 'home'|'away') { const stat=stats.find((row)=>row.type.trim().toLowerCase()===type.toLowerCase()); return stat?numeric(stat[side]):null; }
+function displayStat(value: number | null) { return value === null ? '—' : String(value); }
+function statWithIncrease(value: number | null, baseline: number | null, hot = false) { if (value === null) return '—'; const increase = baseline === null ? null : value - baseline; return `${hot ? '🔥 ' : ''}${value}${increase === null ? '' : ` (${signed(increase)})`}`; }
 function signed(value: number) { return value > 0 ? `+${value}` : String(value); }
