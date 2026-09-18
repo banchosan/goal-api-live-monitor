@@ -186,11 +186,20 @@ export class GoalApiCollector {
     // These are display checkpoints only. They use the same causal rule as
     // the existing 25'/65' displays: retain the latest real socket state at
     // or before the target, never a future value.
+    // Unlike daCutoffStats, these generic comparison checkpoints do not
+    // require an observed HT. They must never be used as a DA-signal
+    // baseline; they only let the UI compare two real socket observations.
+    if (minute !== null && minute > 45 && minute <= 65 && nextStats.length) {
+      fixture.minute65Stats = structuredClone(nextStats); fixture.minute65 = minute;
+    }
     if (minute !== null && minute > 45 && minute <= 70 && nextStats.length) {
       fixture.minute70Stats = structuredClone(nextStats); fixture.minute70 = minute;
     }
     if (minute !== null && minute > 45 && minute <= 75 && nextStats.length) {
       fixture.minute75Stats = structuredClone(nextStats); fixture.minute75 = minute;
+    }
+    if (minute !== null && minute > 45 && minute <= 80 && nextStats.length) {
+      fixture.minute80Stats = structuredClone(nextStats); fixture.minute80 = minute;
     }
     Object.assign(fixture, { home: data.match_hometeam_name ?? fixture.home, away: data.match_awayteam_name ?? fixture.away, homeScore: String(data.match_hometeam_score ?? fixture.homeScore), awayScore: String(data.match_awayteam_score ?? fixture.awayScore), status: nextStatus, stats: structuredClone(nextStats), updates: fixture.updates + 1, updatedAt: receivedAt, lastReceivedAt: receivedAt });
     fixture.subscriptionState = 'receiving';
@@ -315,7 +324,7 @@ function closeCategory(reason) {
   return 'other';
 }
 
-function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, lastGapReportedAt: null, ended: false, htStats: null, daCutoffStats: null, daCutoffMinute: null, koCutoffStats: null, koCutoffMinute: null, minute70Stats: null, minute70: null, minute75Stats: null, minute75: null, subscriptionState: 'not_subscribed', subscribeRequestedAt: null, subscribedAt: null, initialUpdateDeadlineAt: null, initialUpdateResubscribeAttempts: 0, lastRefreshAt: null }; }
+function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, lastGapReportedAt: null, ended: false, htStats: null, daCutoffStats: null, daCutoffMinute: null, koCutoffStats: null, koCutoffMinute: null, minute65Stats: null, minute65: null, minute70Stats: null, minute70: null, minute75Stats: null, minute75: null, minute80Stats: null, minute80: null, subscriptionState: 'not_subscribed', subscribeRequestedAt: null, subscribedAt: null, initialUpdateDeadlineAt: null, initialUpdateResubscribeAttempts: 0, lastRefreshAt: null }; }
 function normalizeFixtures(fixtures) { return Array.isArray(fixtures) ? fixtures.filter((fixture) => fixture?.id).map((fixture) => ({ id: String(fixture.id), league: String(fixture.league ?? ''), country: String(fixture.country ?? ''), home: String(fixture.home ?? 'Home'), away: String(fixture.away ?? 'Away'), homeScore: String(fixture.homeScore ?? '-'), awayScore: String(fixture.awayScore ?? '-'), status: String(fixture.status ?? 'LIVE'), kickoffUtc: fixture.kickoffUtc ? String(fixture.kickoffUtc) : null, monitorSource: String(fixture.monitorSource ?? 'manual') })) : []; }
 
 export function mergeStatistics(previous, incoming) {
