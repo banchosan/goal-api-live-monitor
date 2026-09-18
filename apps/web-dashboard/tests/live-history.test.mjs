@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildLiveHistoryDetail, historyStatus } from '../lib/live-history.ts';
+import { buildLiveHistoryDetail, historyStatus, snapshotFromRawGoalMonitorEvent } from '../lib/live-history.ts';
 
 const fixture = (id = 'goal-api:fixture-1') => ({ fixtureId: id, providerFixtureId: id.replace('goal-api:', ''), home: 'Home', away: 'Away', kickoffUtc: '2026-09-14T12:00:00.000Z' });
 const snapshot = (minute, status, values = {}) => ({ fixture_id: 'goal-api:fixture-1', source_client_event_id: `event-${status}-${minute}`, provider_event_key: `key-${status}-${minute}`, captured_at: `2026-09-14T12:${String(Math.min(minute ?? 0, 59)).padStart(2, '0')}:00.000Z`, elapsed_minute: minute, added_time: null, match_status: status, home_score: 0, away_score: 0, shots_home: null, shots_away: null, shots_on_target_home: null, shots_on_target_away: null, corners_home: null, corners_away: null, attacks_home: null, attacks_away: null, dangerous_attacks_home: null, dangerous_attacks_away: null, yellow_cards_home: null, yellow_cards_away: null, red_cards_home: null, red_cards_away: null, saves_home: null, saves_away: null, passes_total_home: null, passes_total_away: null, passes_accurate_home: null, passes_accurate_away: null, possession_home: null, possession_away: null, ...values });
@@ -11,6 +11,8 @@ test('completed fixtures remain available as D1-history details without collecto
   assert.equal(detail.actualHtObserved, true);
   assert.equal(detail.signals.length, 1);
   assert.equal(detail.signals[0].signalSide, 'AWAY');
+  assert.equal(detail.latest.status, 'FINISHED');
+  assert.equal(detail.latest.homeScore, 4);
   assert.equal(detail.checkpoints.find((row) => row.target === 'HT').dangerousAttacksAway, 9);
   assert.equal(detail.checkpoints.find((row) => row.target === 65).dangerousAttacksAway, 24);
 });
@@ -46,4 +48,13 @@ test('history preserves null statistics and incomplete fixtures', () => {
   assert.equal(detail.checkpoints.find((row) => row.target === 25).dangerousAttacksAway, 0);
   assert.equal(historyStatus('FINISHED'), 'finished');
   assert.equal(historyStatus('31'), 'incomplete');
+});
+
+test('raw-only GOAL history is displayable without inventing a core fixture identity', () => {
+  const raw = snapshotFromRawGoalMonitorEvent({ id: 9, fixtureId: 'goal-provider-fixture', receivedAt: '2026-09-15T14:25:00.000Z', clientEventId: 'raw-9', payload: { data: { match_status: '25', clock: { elapsed: 25 }, match_hometeam_score: '1', match_awayteam_score: '0', statistics: [{ type: 'Dangerous Attacks', home: '18', away: '6' }, { type: 'Corners', home: '3', away: '1' }] } } }, 'raw:goal-api:goal-provider-fixture');
+  assert.equal(raw?.fixture_id, 'raw:goal-api:goal-provider-fixture');
+  assert.equal(raw?.elapsed_minute, 25);
+  assert.equal(raw?.dangerous_attacks_home, 18);
+  assert.equal(raw?.dangerous_attacks_away, 6);
+  assert.equal(raw?.corners_home, 3);
 });

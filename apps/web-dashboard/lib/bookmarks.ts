@@ -4,6 +4,9 @@ export type BookmarkStatus = typeof BOOKMARK_STATUSES[number];
 export type BookmarkInput = {
   fixtureId: string; home: string; away: string; league: string; country?: string;
   kickoffUtc: string; reason?: string; relatedTeamId?: string | null; relatedTeamName?: string | null;
+  // These are optional for legacy/live manual bookmarks.  When all three are
+  // present they are official GOAL provider identifiers, never name guesses.
+  leagueId?: string | null; homeTeamId?: string | null; awayTeamId?: string | null;
 };
 
 export function normalizeBookmarkInput(value: unknown): BookmarkInput {
@@ -18,9 +21,17 @@ export function normalizeBookmarkInput(value: unknown): BookmarkInput {
     reason: String(input.reason ?? 'manual').trim() || 'manual',
     relatedTeamId: input.relatedTeamId ? String(input.relatedTeamId) : null,
     relatedTeamName: input.relatedTeamName ? String(input.relatedTeamName) : null,
+    leagueId: input.leagueId ? String(input.leagueId).trim() : null,
+    homeTeamId: input.homeTeamId ? String(input.homeTeamId).trim() : null,
+    awayTeamId: input.awayTeamId ? String(input.awayTeamId).trim() : null,
   };
 }
 
 export function isBookmarkStatus(value: unknown): value is BookmarkStatus {
   return BOOKMARK_STATUSES.includes(value as BookmarkStatus);
+}
+
+/** A delayed match_update must never reopen a terminal bookmark. */
+export function canTransitionBookmarkStatus(current: BookmarkStatus, next: BookmarkStatus) {
+  return !(current === 'finished' && next === 'monitoring');
 }
