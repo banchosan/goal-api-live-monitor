@@ -527,19 +527,15 @@ function FormStrip({ results }: { results: FormResult[] | null }) {
   return <span className="live-form-strip" title="保存済みの直近5試合（左が古い試合）">{results.map((item, index) => <i key={`${item.fixtureId}-${index}`} className={item.result.toLowerCase()}>{item.result}</i>)}</span>;
 }
 
-type LateIntervalKey = '65-70' | '70-75' | '75-80';
-
 function LateMatchComparisonPanel({ match }: { match: LiveMatch }) {
-  const [selected, setSelected] = useState<LateIntervalKey>('65-70');
-  const intervals: Record<LateIntervalKey, { label: string; startLabel: string; endLabel: string; startMinute: number | null; endMinute: number | null; startStats: Stat[] | null; endStats: Stat[] | null }> = {
-    '65-70': { label: '65′ → 70′', startLabel: '65′', endLabel: '70′', startMinute: match.minute65 ?? null, endMinute: match.minute70 ?? null, startStats: match.minute65Stats ?? null, endStats: match.minute70Stats ?? null },
-    '70-75': { label: '70′ → 75′', startLabel: '70′', endLabel: '75′', startMinute: match.minute70 ?? null, endMinute: match.minute75 ?? null, startStats: match.minute70Stats ?? null, endStats: match.minute75Stats ?? null },
-    '75-80': { label: '75′ → 80′', startLabel: '75′', endLabel: '80′', startMinute: match.minute75 ?? null, endMinute: match.minute80 ?? null, startStats: match.minute75Stats ?? null, endStats: match.minute80Stats ?? null },
-  };
-  const interval = intervals[selected];
+  return <><LateIntervalPanel label="65' → 70'" startLabel="65'" endLabel="70'" startMinute={match.minute65 ?? null} endMinute={match.minute70 ?? null} startStats={match.minute65Stats ?? null} endStats={match.minute70Stats ?? null} /><LateIntervalPanel label="70' → 75'" startLabel="70'" endLabel="75'" startMinute={match.minute70 ?? null} endMinute={match.minute75 ?? null} startStats={match.minute70Stats ?? null} endStats={match.minute75Stats ?? null} /><LateIntervalPanel label="75' → 80'" startLabel="75'" endLabel="80'" startMinute={match.minute75 ?? null} endMinute={match.minute80 ?? null} startStats={match.minute75Stats ?? null} endStats={match.minute80Stats ?? null} /></>;
+}
+
+function LateIntervalPanel({ label, startLabel, endLabel, startMinute, endMinute, startStats, endStats }: { label: string; startLabel: string; endLabel: string; startMinute: number | null; endMinute: number | null; startStats: Stat[] | null; endStats: Stat[] | null }) {
+  const interval = { label, startLabel, endLabel, startMinute, endMinute, startStats, endStats };
   const ready = Boolean(interval.startStats?.length && interval.endStats?.length);
   const rows = ['Dangerous Attacks', 'On Target', 'Off Target', 'Corners'].map((type) => ({ type, home: statValue(interval.endStats ?? [], type, 'home'), away: statValue(interval.endStats ?? [], type, 'away'), baseHome: statValue(interval.startStats ?? [], type, 'home'), baseAway: statValue(interval.startStats ?? [], type, 'away') }));
-  return <details className="snapshot-delta da-signal-panel interval-comparison-panel" open><summary><b>65' → 80' STAT COMPARISON</b><span>比較区間を選択</span></summary><div className="interval-tabs" role="tablist" aria-label="65分以降の比較区間を選択">{(Object.keys(intervals) as LateIntervalKey[]).map((key) => <button type="button" role="tab" aria-selected={selected === key} className={selected === key ? 'active' : ''} onClick={() => setSelected(key)} key={key}>{intervals[key].label}</button>)}</div><div className="stat-head"><span>HOME</span><b>{ready ? `${interval.startMinute}' → ${interval.endMinute}'` : `${interval.startLabel} → ${interval.endLabel} checkpoint待ち`}</b><span>AWAY</span></div>{ready ? <>{rows.map((row) => <SignalStatRow key={row.type} label={`${row.type}（${interval.label}）`} home={row.home} away={row.away} baseHome={row.baseHome} baseAway={row.baseAway} />)}<small>Status: {interval.startMinute}' / {interval.endMinute}' の実際のSocket checkpoint比較（括弧内は開始時点からの増減）</small></> : <p className="no-delta">{interval.startLabel} と {interval.endLabel} の両方のcheckpointを待っています。</p>}</details>;
+  return <details className="snapshot-delta da-signal-panel interval-comparison-panel"><summary><b>{label} STAT SNAPSHOT</b><span>DA / On・Off Target / Corner</span></summary><div className="stat-head"><span>HOME</span><b>{ready ? `${interval.startMinute}' → ${interval.endMinute}'` : `${interval.startLabel} → ${interval.endLabel} checkpoint待ち`}</b><span>AWAY</span></div>{ready ? <>{rows.map((row) => <SignalStatRow key={row.type} label={`${row.type}（${interval.label}）`} home={row.home} away={row.away} baseHome={row.baseHome} baseAway={row.baseAway} />)}<small>Status: {interval.startMinute}' / {interval.endMinute}' の実際のSocket checkpoint比較（括弧内は開始時点からの増減）</small></> : <p className="no-delta">{interval.startLabel} と {interval.endLabel} の両方のcheckpointを待っています。</p>}</details>;
 }
 
 function DangerousAttacksSignalPanel({ match, signals }: { match: LiveMatch; signals: LiveSignal[] }) {

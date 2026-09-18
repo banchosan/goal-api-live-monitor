@@ -79,7 +79,7 @@ current DA - actual HT DA >= 15
 
 ### 65→70 / 70→75 / 75→80 比較
 
-LIVEカードの **LATE MATCH STAT COMPARISON** を開き、区間を一つ選択します。
+LIVEカードには、必要な区間だけ開ける折りたたみ式の比較カードを表示します。
 
 - HT → 65
 - 65 → 70
