@@ -1,124 +1,215 @@
 # GOAL API Live Monitor
 
-GOAL API Freeプランを使った、ライブ試合一覧・WebSocket statistics監視・検証用の独立プロジェクトです。Goaliseとは完全に分離されています。
+GOAL APIを使い、サッカーのLIVE試合をWebSocketで収集し、`Dangerous Attacks`・shots・cornersなどの時系列から、あとで検証できる形で保存するローカル専用プロジェクトです。
 
-## まず使うもの
+目的は、単に通知を出すことではありません。事前の直近5試合Form、LIVEの攻撃圧、得点・最終結果を同じfixtureに安全に結び、将来のパターン発見・バックテスト・ML用datasetを作れるようにすることです。
 
-- Web画面: `apps/web-dashboard/`
-- ダブルクリック起動: `start.command`
-- 普段の起動・停止・状態確認: `操作/`
-- APIキー: ルートの `.env` に `GOAL_API_KEY=...`
-- 取得ログ: `data/goal_api_test/`
+> 現在は **ローカルD1 / local Collector / local Dashboard** 専用です。production・remote D1はこの通常運用では使いません。
 
-Web画面上部のタブで、次の2画面を切り替えられます。
+## 日常の使い方
 
-- `ライブ監視`: ライブfixtureを選択してWebSocket監視
-- `今後24時間`: 現在時刻から24時間以内に始まる全fixtureをJST順で表示
+1. Finderで `操作/` を開き、CollectorとDashboardを起動する。
+2. Dashboardの **24時間分析** で今後24時間のfixtureを取得する。
+3. 必要なら対象リーグを絞り、直近5試合Form分析を実行する。
+4. 好調候補・今後の試合をBookmarkする。複数選択から一括Bookmarkもできる。
+5. Bookmark済み試合はkickoff約3分前から既存SchedulerがCollectorへ渡す。
+6. **LIVE監視** でSocketのcurrent stats、25分・HT→65分のsignal、後半の区間比較を確認する。
+7. 終了済み試合は **LIVE履歴** で確認する。Collectorの現在メモリから消えても、保存済みデータは残る。
 
-ライブ一覧、24時間一覧、好調候補から試合をBookmarkできます。BookmarkはD1へ保存され、kickoff約3分前になると起動中のCollectorが同じ1本のWebSocketへ自動追加します。25枠を超えた試合はkickoff順の待機列に残り、daemon再起動後もwaiting/monitoring状態から復元されます。Bookmarkを一覧から外しても、それまでのraw JSONL・D1イベント・timelineは削除されません。
+通常の起動はFinderの `.command` を使えばよく、Codexを毎回呼ぶ必要はありません。
 
-ライブ監視では、各試合の「現在値をスナップ」から任意時点のstatisticsを保存し、その時点から現在までの増減を比較できます。WebSocketの生更新、手動スナップ、score/status、監視開始・追加・終了はローカルD1へ永続保存されます。保存処理とスナップ比較によるGOAL API REST消費は0です。
+## 画面の役割
 
-WebSocket収集は `services/collector/` のローカルCollectorが担当します。画面を再読み込みしてもCollectorは止まらず、異常切断時だけ自動で再接続・再認証・再subscribeします。「監視を停止」を押した場合は再接続しません。通常時の定期REST statistics pollingは行いません。
+| 画面 | 用途 | source of truth |
+| --- | --- | --- |
+| LIVE監視 | 今まさにSocketで受信している試合の確認・手動snapshot・signal表示 | Collector current state + 保存済みfallback |
+| 24時間分析 | 今後24時間のfixture、5試合Form分析、オッズ取得 | GOAL API取得結果・保存済みForm run |
+| 管理 | Bookmark、監視対象外、AUTO_FORMの反映 | `fixture_bookmarks` / exclusions |
+| LIVE履歴 | 完走・中断済みの試合を後から確認 | `live_snapshots` / `live_signals` / `monitor_events` |
+| オッズ一覧・分析データ | 保存済みオッズ・結果・分析用出力 | raw + typed PRE-MATCH tables |
 
-`今後24時間`では、取得済みfixtureを追加RESTなしで「指定リーグ」に絞り込めます。対象は5大リーグの1部・2部、オランダ1部・2部に加え、イランPro League、サウジアラビア1部・2部、Coppa Italia、ブルガリアFirst League、オーストリアBundesliga、デンマークSuperliga、ベルギーFirst Division A、スイスSuper League、スコットランドPremiership、Turkey 1. Lig、Qatar Stars League、Algeria Ligue 1、Poland Ekstraklasa、Estonia Esiliiga A、Armenia Premier League、Egypt Premier League、Hungary NB I、エクアドル1部、ブラジル1部・2部、アルゼンチン1部、コロンビア1部です。分析ボタンを押すと、対象のユニークteamごとに `/teams/:id/results?limit=5` を1回取得し、直近5試合で「4勝以上」または「3勝かつ1分以上」のteamを監視候補として表示します。実行前に最大REST数をボタン上で確認できます。
+### Bookmark と監視対象外は別物
 
-## 起動
+- **Bookmark**: kickoff前から自動監視の予約にする。Schedulerが対象にする。
+- **LIVE画面から外す / 監視対象外**: Bookmark・raw・D1履歴を残したまま、今後の自動監視とLIVEカード表示だけを外す。
+- **Bookmarkを外す**: 予約そのものを解除する。ただし、すでに集めた履歴は削除しない。
 
-Finderから `start.command` をダブルクリックします。または:
+管理画面では日付（JST）を選び、00:00→23:59のkickoff順でBookmarkを表示します。そこで複数選択して「LIVE画面から外す」を行ってもBookmarkは残ります。
+
+## LIVEデータの流れ
+
+```text
+GOAL WebSocket match_update
+        │
+        ├─ raw JSONL                         再解析できる原本
+        ├─ monitor_events (D1)               durable event record
+        └─ live_snapshots (D1)               typed時系列・分析の母集団
+                 │
+                 ├─ live_signals (D1)        条件を満たしたイベントだけ
+                 ├─ LIVE Dashboard            実時間表示
+                 ├─ LIVE履歴                  終了後の確認
+                 └─ read-only analysis CSV    dataset / backtest
+```
+
+### 保存方針
+
+- **RAW** はAPIから届いた原本。normalizer変更後でも再投影できるため、消さない。
+- **`monitor_events`** は受信イベントの永続ログ。接続・subscribe・disconnect等の観測性にも使う。
+- **`live_snapshots`** は有効な`match_update`ごとのtyped時系列。後から任意minute・任意windowを再計算するため、固定区間の集計tableをむやみに増やさない。
+- **`live_signals`** は「条件を満たしたケース」の証拠。baseline / trigger snapshot・rule version・detected minuteなどを残す。
+
+NULLは0ではありません。欠損したDA・shots・scoreを0に置換せず、分析時もNULLのまま扱います。
+
+## LIVE監視のルールと表示
+
+### 25分 DA
+
+キックオフ時刻の0分値を待たず、25分以前に実際に受信した最後のSocket更新をcheckpointとして使います。HOMEまたはAWAYのDAが20以上なら表示を強調します。
+
+### HT → 65分 DA
+
+`actual Half Time` を**このCollector sessionで実際に観測した場合だけ**baselineにします。45分の値、途中接続時点の値、過去DBの値をHTとして推測しません。
+
+```text
+current DA - actual HT DA >= 15
+かつ minute <= 65
+```
+
+を満たすとHOME/AWAY別に一度だけsignalを保存します。65分を超えた後も、65分以前の最後の表示値と発火分数を消しません。
+
+### 65→70 / 70→75 / 75→80 比較
+
+LIVEカードの **LATE MATCH STAT COMPARISON** を開き、区間を一つ選択します。
+
+- HT → 65
+- 65 → 70
+- 70 → 75
+- 75 → 80
+
+各targetについて、target以後の未来データは使わず、**target以前で最新のSocket更新**を採用します。DA、On/Off Target、Corners、Attacks、Possessionの終点値と増減を確認できます。これは画面上の再計算であり、区間別の重複データは保存しません。
+
+### Provider異常への扱い
+
+GOAL providerが試合中に一時的な`NOT_STARTED` / `match_live=0` / minute空のframeを送ることがあります。このframeはRAWとして残しますが、`match_live=0`単独ではfinished扱いにせずunsubscribeしません。明示的なterminal statusだけで終了させます。
+
+WebSocketはheartbeat、再認証、再subscribe、指数backoffを持ちます。ただしproviderが更新を送らない時間やネットワーク断は完全には防げません。Dashboardのdata gap・LIVE履歴で確認してください。
+
+## Bookmark Scheduler
+
+- BookmarkはD1へ永続化される。
+- kickoff約3分前に既存SchedulerがCollectorへ渡す。
+- 1本のWebSocket connection上で最大25 fixtureをsubscribeする。
+- 超過分はkickoff順にqueueする。
+- restart recovery、FT unsubscribe、manual / AUTO_FORM共存を持つ。
+- 同じfixtureをMANUALとAUTO_FORMで二重subscribeしない。
+
+AUTO_FORMは、Form条件に合格し、正式GOAL league IDのallowlistを通り、安全なGOAL fixture identityを作成または再利用できたfixtureだけをBookmarkします。名前だけによるteam/fixture mergeはしません。
+
+## PRE-MATCH データ
+
+```text
+upcoming fixtures
+  → 直近5試合Form
+  → Form candidates
+  → odds / result
+  → raw保存 + typed保存
+```
+
+### 5試合Form
+
+対象リーグはDashboardの`isSelectedLeague`定義にあり、国・league表記を正規化して判定します。Form候補条件は現在、直近5試合で「4勝以上」または「3勝+1分以上」を基準にし、直近2試合がLL / DL / LDなら除外します。
+
+Form runは保存されるため、保存済み候補からオッズだけを再取得できます。この導線ではGOALのupcoming / form APIを再消費せず、必要なAPI-Football oddsだけを使います。
+
+### RAW と TYPED
+
+| 種別 | RAW | TYPED |
+| --- | --- | --- |
+| Form | `form_analysis_runs` 等 | `prematch_form_observations` |
+| Odds | `odds_analysis_runs` / `odds_snapshots` | `odds_capture_runs_v2` / `odds_market_values` |
+| Result | `result_snapshots` | `match_results_v2` |
+| LIVE | JSONL / `monitor_events` | `live_snapshots` / `live_signals` |
+
+RAWは最優先です。typed conversion・identity・normalizerが失敗しても、取得済みの原本を失わないことを設計原則にしています。
+
+## Fixture / Team identity
+
+Core identityはprovider固有IDを根拠にします。
+
+- `team_provider_ids`: `provider + external_team_id → core_team`
+- `fixture_provider_ids`: `provider + external_fixture_id → core_fixture`
+- `core_fixtures`: home / away core team、kickoff、leagueを持つ
+
+GOAL provider内のfixtureは、fixture ID・home/away team ID・kickoff・league IDが揃うときだけ作成します。既存GOAL mappingがあれば、その`core_team`を必ず再利用します。name-only mergeは禁止です。
+
+GOALとAPI-Footballのcross-provider統合は別処理です。fixture identity bridgeが複数evidenceで`SAFE`と判定した場合だけ行い、通常のGOAL identity作成が勝手にAPI-Football mappingを足すことはありません。
+
+## 分析dataset（read-only）
+
+保存済み`live_snapshots`から、1行 = `fixture × side × checkpoint` のCSVを作れます。書き込み・外部API・WebSocket接続はしません。
+
+```bash
+cd /Users/tsukasa/Desktop/goal-api-live-monitor
+node --experimental-strip-types scripts/live_analysis_dataset.ts
+```
+
+主な列:
+
+- checkpoints: 55 / 60 / 65（actual HT baselineとcausal checkpoint）
+- DA、shots、SOT、corners、attacks、possessionの差分
+- score state
+- HOME/AWAY別の次の5 / 10 / 15分得点ラベル
+- cumulative correction・欠損のanomaly flag
+
+未来snapshotはfeature計算に使いません。未来データを使うのは、ラベル（次の5/10/15分に得点したか）の列だけです。40試合規模はpipeline検証・探索には使えますが、利益性や再現性の証明には不十分です。
+
+## 運用上の重要な学び
+
+このプロジェクトで実運用・監査を通じて確立したルールです。
+
+1. **RAW first** — providerの欠損・JSON不正・identity未解決でも、受信済み原本を捨てない。
+2. **actual HT only** — minute=45や途中接続時の値からHT baselineを推測するとlook-aheadや偽signalになる。
+3. **causal checkpoint** — 60分を表示するのに61分の値を使わない。各target以前の最新観測だけを使う。
+4. **NULL ≠ 0** — 未配信、placeholder、実測0を混同しない。
+5. **signalは母集団ではない** — 発火試合だけでなく、全監視fixtureの`live_snapshots`を残してnon-signal control群も分析する。
+6. **Collector memoryは表示用** — 終了試合の事実はD1履歴を見る。daemonの再起動・unsubscribeで履歴が消えたように見えてはいけない。
+7. **provider anomalyをterminal扱いしない** — explicit terminal statusだけで終了する。
+
+## 起動・テスト
+
+Dashboard開発起動:
 
 ```bash
 cd /Users/tsukasa/Desktop/goal-api-live-monitor/apps/web-dashboard
-npm install
 npm run dev
 ```
 
-ブラウザで http://localhost:3000/ を開きます。
+テストとproduction build:
 
-普段はFinderで `操作` フォルダを開き、起動・停止・状態確認の `.command` をダブルクリックするだけで操作できます。Codexへ起動を依頼する必要はありません。
+```bash
+npm test
+npm run build
+```
 
-## 構成
+主要なデータ位置:
 
 ```text
-goal-api-live-monitor/
-├── apps/
-│   └── web-dashboard/       # 現在のメイン画面
-├── scripts/                 # monitor・API検証スクリプト
-├── data/                    # raw JSON・検証結果（Git対象外）
-├── .env                     # APIキー（Git対象外）
-├── .env.example
-├── .gitignore
-└── start.command
+data/goal_api_test/collector/<session_id>/events.jsonl  # immutable raw
+apps/web-dashboard/.wrangler/state/v3/d1/              # local D1（Git対象外）
+scripts/live_analysis_dataset.ts                         # read-only dataset exporter
+scripts/live_delta_report.ts                             # checkpoint/delta report
 ```
 
-## 主なスクリプト
-
-- `scripts/goal_api_live_stats_dashboard.mjs`: 旧ターミナルライブ画面
-- `scripts/goal_api_four_match_websocket_test.mjs`: 複数試合WebSocket検証
-- `scripts/goal_api_websocket_quota_test.mjs`: quota実測
-- `scripts/goal_api_live_statistics_test.py`: REST statistics検証
-- `scripts/goal_api_duplicate_statistics_test.py`: 重複statistics検証
-- `scripts/analyze_saved_goal_api_data.py`: 保存済みデータの棚卸し・分析（API request 0）
-- `scripts/analyze_goal_context.py`: raw Socket eventsからGoal直前の時系列・stat差分を再生成（API request 0）
-
-## 保存データと分析
-
-- これまでのJSON/JSONL: `data/goal_api_test/`
-- Web画面の永続DB: `apps/web-dashboard/.wrangler/state/v3/d1/`（Git対象外）
-- Collector raw JSONL: `data/goal_api_test/collector/<session_id>/events.jsonl`
-- 分析結果: `data/goal_api_test/analysis/latest.json` と `latest.md`
-
-保存済みrawから任意minuteを復元するローカルAPI:
-
-```text
-GET /api/timeline?fixtureId=<id>&minute=60&sessionId=<session_id>
-```
-
-`targetMinute`、`actualObservedMinute`、`freshnessMinutes`、`missing`、`monitoringSession`、`connectionGap`を返します。外部API通信はありません。
-
-既存データを再分析する場合:
-
-```bash
-cd /Users/tsukasa/Desktop/goal-api-live-monitor
-python3 scripts/analyze_saved_goal_api_data.py
-```
-
-この分析はローカルファイルだけを読み、GOAL API requestを送りません。
-
-### Goal前後の時系列分析
-
-Collectorのimmutableな `events.jsonl` から、fixture/sessionごとの累積timelineと、監視中に初めて観測されたGoalの直前5分・10分のstatistics差分を再生成できます。raw JSONLは変更しません。
-
-```bash
-cd /Users/tsukasa/Desktop/goal-api-live-monitor
-python3 scripts/analyze_goal_context.py
-```
-
-出力は `data/goal_api_test/derived/goal_context/<UTC時刻>/` に保存されます。
-
-- `observations.jsonl`: partial updateを同一session内で復元した各観測値。重複statは `Corners#1` / `Corners#2` のように保持
-- `goal_contexts.jsonl`: Goal検出、score前後、scorer、Goal前5/10分の差分。`confirmed`（scoreとscorer一致）/ `score_only` / `goalscorer_only` / `historical` のconfidenceを保持。最初の観測時点ですでに存在したGoalは `historical_at_first_observation` として学習ラベルから区別
-- `summary.json`: fixture数、観測数、Goal数、実在したstat type、window定義
-
-任意のfixtureだけを再解析する場合：
-
-```bash
-python3 scripts/analyze_goal_context.py --fixture-id <fixture_id> --windows 5,10
-```
-
-再接続・切断のlifecycleも読んでおり、window内に観測gapがある場合は `connectionGap: true`、`complete: false` として学習対象から分けられます。
-
-## 確認済み仕様
-
-- ライブ一覧は `/fixtures?status=LIVE` と `status=HALF_TIME` をpagination付きで取得します。通常は2 REST requestで、各statusが100件を超える場合は次ページ分が増えます
-- 今後24時間は `/fixtures?from=...&to=...&status=SCHEDULED` を取得後、`kickoffUtc`で厳密に絞り込む
-- `/fixtures` の実API上の `limit` は最大100件（公開OpenAPIの500件表記とは不一致）
-- Freeプラン実測: 1 WebSocket connection / 最大25 match subscriptions
-- WebSocket `match_update`受信は日次1,000 REST quotaを消費しない
-- `/ws/token` は日次1,000件とは別のrate-limit bucket
-- 正確な試合分数は主にWebSocket `match_status`から取得
-- 通常監視中のREST statistics pollingは0。Socket再接続時は新しい`/ws/token`だけ取得
+`.env`、local D1、raw JSONL、`node_modules`はGitへ含めません。
 
 ## Git運用
 
-コード変更前にコミットし、動作確認後にもう一度コミットします。`.env`、取得ログ、`node_modules`はGitへ含めません。
+Gitは「毎日必須」ではなく、意味のある安全な区切りでcommitします。
+
+- 画面の小改善、Collectorの挙動変更、schema変更、分析script追加など、あとで戻したくなりそうな単位でcommitする。
+- 実装 → テスト → production build → commit が基本。
+- 調査だけ、READMEの軽微な誤字、未完の実験は無理にcommitしない。
+- commitしなくてもファイル変更はローカルに残るが、PC障害・誤操作・別変更の混入から守る履歴にはならない。
+- API key、rawデータ、local D1はcommitしない。
+
+このプロジェクトでは、Collectorや保存構造に関わる変更は特にcommitを推奨します。画面上の一つの機能だけの変更でも、関連するテストが通った時点で独立commitにすると、問題発生時に原因を追いやすくなります。
