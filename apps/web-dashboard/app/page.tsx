@@ -59,6 +59,39 @@ export default function Home() {
     catch(error){setBookmarkMessage(error instanceof Error?error.message:'Bookmark失敗')}
   }
   async function removeBookmark(fixtureId:string){await fetch(`/api/bookmarks?fixtureId=${encodeURIComponent(fixtureId)}`,{method:'DELETE'});await loadBookmarks()}
+  async function bookmarkFixtures(items: UpcomingFixture[]) {
+    const unique=[...new Map(items.map((item)=>[item.id,item])).values()].filter((item)=>!bookmarks.some((bookmark)=>bookmark.fixtureId===item.id));
+    if (!unique.length) { setBookmarkMessage('選択した試合はすでにすべてBookmark済みです。'); return; }
+    let saved=0; const failed:string[]=[];
+    for (const fixture of unique) {
+      try {
+        const response=await fetch('/api/bookmarks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fixtureId:fixture.id,home:fixture.home,away:fixture.away,league:fixture.league,country:fixture.country,kickoffUtc:fixture.kickoffUtc,leagueId:fixture.leagueId,homeTeamId:fixture.homeTeamId,awayTeamId:fixture.awayTeamId,reason:'upcoming-bulk'})});
+        if (!response.ok && response.status!==409) throw new Error((await response.json().catch(()=>({}))).error||'Bookmark失敗');
+        saved += 1;
+      } catch { failed.push(`${fixture.home} vs ${fixture.away}`); }
+    }
+    await loadBookmarks(); setBookmarkMessage(`選択した${unique.length}試合を一括Bookmark: 保存 ${saved} / 失敗 ${failed.length}${failed.length?`（${failed.slice(0,3).join(' / ')}${failed.length>3?' ほか':''}）`:''}`);
+  }
+  async function excludeBookmarksFromMonitoring(items: Bookmark[]) {
+    const unique=[...new Map(items.map((item)=>[item.fixtureId,item])).values()].filter((item)=>!excludedFixtureIdsRef.current.has(item.fixtureId));
+    if (!unique.length) { setMessage('選択した試合はすでにLIVE画面から外れています。'); return; }
+    let saved=0; const failed:string[]=[];
+    for (const bookmark of unique) {
+      try {
+        const exclusion=await fetch('/api/monitor-exclusions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fixtureId:bookmark.fixtureId,home:bookmark.home,away:bookmark.away,reason:'bulk_manual_monitor_exclusion'})});
+        if (!exclusion.ok) throw new Error('監視除外の保存に失敗しました');
+        excludedFixtureIdsRef.current.add(bookmark.fixtureId); hiddenFixtureIdsRef.current.add(bookmark.fixtureId);
+        const match=matchesRef.current[bookmark.fixtureId];
+        if (match && !match.ended) {
+          const response=await fetch('/api/collector',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'remove',fixtureId:bookmark.fixtureId,reason:'bulk_manual_monitor_exclusion'})});
+          if (!response.ok) throw new Error('Collectorから外せませんでした');
+          setMatches((now)=>withoutFixture(now,bookmark.fixtureId));
+        }
+        saved += 1;
+      } catch { failed.push(`${bookmark.home} vs ${bookmark.away}`); }
+    }
+    await loadMonitorExclusions(); setMessage(`選択した${unique.length}試合をLIVE画面から外しました。Bookmarkは維持: 成功 ${saved} / 失敗 ${failed.length}${failed.length?`（${failed.slice(0,3).join(' / ')}${failed.length>3?' ほか':''}）`:''}`);
+  }
   async function restoreMonitoring(fixtureId:string){const response=await fetch(`/api/monitor-exclusions?fixtureId=${encodeURIComponent(fixtureId)}`,{method:'DELETE'});if(response.ok){excludedFixtureIdsRef.current.delete(fixtureId);hiddenFixtureIdsRef.current.delete(fixtureId);await loadMonitorExclusions();setMessage('監視除外を解除しました。Bookmark済みならschedulerが再び監視へ追加します。');}}
   async function applySavedAutoBookmarks() {
     if (applyingSavedAuto) return;
@@ -264,11 +297,11 @@ export default function Home() {
       <section className="score-stage">{!Object.keys(matches).length && <div className="hero-empty"><div className="pulse-rings"><span /><span /><b>⚽</b></div><h2>試合を選択してください</h2><p>左のライブ一覧から最大25試合を選び、1本のSocketで同時監視できます。</p><div className="flow"><span>LIVE LIST<small>通常2 REST</small></span><i>→</i><span>SELECT<small>最大25試合</small></span><i>→</i><span>WEBSOCKET<small>更新消費 0</small></span></div></div>}
         <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} form={liveForms[m.id] ?? null} signals={liveSignals[m.id]??[]} onCapture={() => captureSnapshot(m.id)} onSelectSnapshot={(snapshotId) => selectSnapshot(m.id, snapshotId)} onRemove={() => m.ended ? void hideFinishedFixture(m.id) : void removeFromMonitoring(m.id)} onRefresh={() => void refreshSubscription(m.id)} />)}</div>
       </section>
-    </div> : viewMode === 'upcoming' ? <UpcomingBoard fixtures={upcomingFixtures} loading={upcomingLoading} onRest={(count) => setRestCount((value) => value + count)} bookmarks={bookmarks} onBookmark={bookmarkFixture} /> : <ManagementBoard bookmarks={bookmarks} exclusions={monitorExclusions} matches={matches} message={bookmarkMessage} onRemove={removeBookmark} onRestoreMonitoring={restoreMonitoring} onApplySavedAuto={applySavedAutoBookmarks} applyingSavedAuto={applyingSavedAuto} />}
+    </div> : viewMode === 'upcoming' ? <UpcomingBoard fixtures={upcomingFixtures} loading={upcomingLoading} onRest={(count) => setRestCount((value) => value + count)} bookmarks={bookmarks} onBookmark={bookmarkFixture} onBulkBookmark={bookmarkFixtures} /> : <ManagementBoard bookmarks={bookmarks} exclusions={monitorExclusions} matches={matches} message={bookmarkMessage} onRemove={removeBookmark} onRestoreMonitoring={restoreMonitoring} onBulkExclude={excludeBookmarksFromMonitoring} onApplySavedAuto={applySavedAutoBookmarks} applyingSavedAuto={applyingSavedAuto} />}
   </main>;
 }
 
-function UpcomingBoard({ fixtures, loading, onRest, bookmarks, onBookmark }: { fixtures: UpcomingFixture[]; loading: boolean; onRest: (count: number) => void; bookmarks:Bookmark[]; onBookmark:(fixture:UpcomingFixture,reason?:string,relatedTeamId?:string,relatedTeamName?:string)=>Promise<void> }) {
+function UpcomingBoard({ fixtures, loading, onRest, bookmarks, onBookmark, onBulkBookmark }: { fixtures: UpcomingFixture[]; loading: boolean; onRest: (count: number) => void; bookmarks:Bookmark[]; onBookmark:(fixture:UpcomingFixture,reason?:string,relatedTeamId?:string,relatedTeamName?:string)=>Promise<void>; onBulkBookmark:(fixtures:UpcomingFixture[])=>Promise<void> }) {
   const [scope, setScope] = useState<'all' | 'big5'>('big5');
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisMessage, setAnalysisMessage] = useState('');
@@ -276,8 +309,14 @@ function UpcomingBoard({ fixtures, loading, onRest, bookmarks, onBookmark }: { f
   const [formRunId, setFormRunId] = useState('');
   const [oddsLoading, setOddsLoading] = useState(false);
   const [oddsMessage, setOddsMessage] = useState('');
+  const [selectedFixtureIds, setSelectedFixtureIds] = useState<string[]>([]);
   const shown = scope === 'big5' ? fixtures.filter(isSelectedLeague) : fixtures;
   const uniqueTeams = new Set(shown.flatMap((fixture) => [fixture.homeTeamId, fixture.awayTeamId]).filter(Boolean)).size;
+  const bookmarkable=shown.filter((fixture)=>!bookmarks.some((bookmark)=>bookmark.fixtureId===fixture.id));
+  const selectedFixtures=bookmarkable.filter((fixture)=>selectedFixtureIds.includes(fixture.id));
+  const allBookmarkableSelected=bookmarkable.length>0&&selectedFixtures.length===bookmarkable.length;
+  function toggleBookmarkSelection(id:string) { setSelectedFixtureIds((now)=>now.includes(id)?now.filter((value)=>value!==id):[...now,id]); }
+  function toggleAllBookmarkable() { setSelectedFixtureIds(allBookmarkableSelected?[]:bookmarkable.map((fixture)=>fixture.id)); }
 
   async function analyzeForm() {
     if (!shown.length || analyzing) return;
@@ -319,11 +358,13 @@ function UpcomingBoard({ fixtures, loading, onRest, bookmarks, onBookmark }: { f
       <div className="scope-panel"><div><button className={scope === 'big5' ? 'active' : ''} onClick={() => { setScope('big5'); setCandidates([]); setAnalysisMessage(''); }}>指定リーグ</button><button className={scope === 'all' ? 'active' : ''} onClick={() => { setScope('all'); setCandidates([]); setAnalysisMessage(''); }}>全試合</button></div><div className="actions"><a className="secondary" href="/form-history">保存済み候補からオッズ取得</a><button className="analyze-button" disabled={analyzing || !shown.length || uniqueTeams > 250} onClick={analyzeForm}>{analyzing ? '分析中…' : `直近5試合を分析（最大 ${uniqueTeams} REST）`}</button></div></div>
       <div className="scope-note">絞り込みは取得済みfixture内で行うため追加REST 0。直近成績はユニークteamごとに1 RESTです。</div>
       <div className="upcoming-summary"><span>{scope === 'big5' ? 'SELECTED LEAGUES' : 'UPCOMING FIXTURES'}</span><strong>{shown.length}</strong><small>現在時刻から24時間以内・JST順 · {uniqueTeams}チーム</small></div>
+      <div className="bulk-actions"><label><input type="checkbox" checked={allBookmarkableSelected} onChange={toggleAllBookmarkable} disabled={!bookmarkable.length} /> この一覧の未Bookmarkをすべて選択</label><button disabled={!selectedFixtures.length} onClick={()=>void onBulkBookmark(selectedFixtures)}>★ 選択した{selectedFixtures.length}試合をBookmark</button></div>
       {analysisMessage && <div className="analysis-message">{analysisMessage}</div>}
       {candidates.length > 0 && <div className="odds-fetch-row"><button disabled={oddsLoading} onClick={fetchCandidateOdds}>{oddsLoading ? 'オッズ取得・保存中…' : `候補${new Set(candidates.map(c => c.fixtureId)).size}試合のオッズを取得・保存`}</button><a href="/odds">保存済みオッズを見る →</a></div>}
       {oddsMessage && <div className="analysis-message">{oddsMessage}</div>}
       {candidates.length > 0 && <section className="candidate-section"><div className="candidate-title"><span>WATCH CANDIDATES</span><strong>4勝以上 または 3勝＋1分以上（直近2戦 LL / DL / LD は除外）</strong></div><div className="candidate-grid">{candidates.map((candidate) => {const fixture=fixtures.find(f=>f.id===candidate.fixtureId);return <article className="candidate-card" key={`${candidate.fixtureId}-${candidate.team}`}><div><time>{candidate.kickoffJst} JST</time><b>{candidate.wins}W {candidate.draws}D / 5</b></div><h3>{candidate.team}</h3><p>{candidate.side.toUpperCase()} vs {candidate.opponent}</p><small>{candidate.country} · {candidate.league}</small><div className="form-strip">{candidate.last5.map((result, index) => <span className={result.result.toLowerCase()} title={`${result.opponent} ${result.score}`} key={`${result.fixtureId}-${index}`}>{result.result}</span>)}</div>{fixture&&<button className="bookmark-button" disabled={bookmarks.some(b=>b.fixtureId===fixture.id)} onClick={()=>void onBookmark(fixture,'good-form',candidate.teamId,candidate.team)}>★ 好調候補をBookmark</button>}</article>})}</div></section>}
       <div className="upcoming-list">{shown.map((fixture) => <article className="upcoming-row" key={fixture.id}>
+        <label className="bulk-choice"><input aria-label={`${fixture.home} vs ${fixture.away}を一括Bookmark用に選択`} type="checkbox" disabled={bookmarks.some((bookmark)=>bookmark.fixtureId===fixture.id)} checked={selectedFixtureIds.includes(fixture.id)} onChange={()=>toggleBookmarkSelection(fixture.id)} /></label>
         <time dateTime={fixture.kickoffUtc}><strong>{fixture.kickoffJst}</strong><small>JST</small></time>
         <div className="upcoming-teams"><span>{fixture.home}</span><i>vs</i><span>{fixture.away}</span></div>
         <div className="upcoming-meta"><strong>{fixture.country}</strong><span>{fixture.league}</span><code>{fixture.id}</code><button className="bookmark-button" disabled={bookmarks.some(b=>b.fixtureId===fixture.id)} onClick={()=>void onBookmark(fixture,'upcoming-manual')}>★ Bookmark</button></div>
@@ -332,13 +373,20 @@ function UpcomingBoard({ fixtures, loading, onRest, bookmarks, onBookmark }: { f
   </section>;
 }
 
-function BookmarkPanel({bookmarks,exclusions,matches,message,onRemove,onRestoreMonitoring}:{bookmarks:Bookmark[];exclusions:MonitorExclusion[];matches:Record<string,LiveMatch>;message:string;onRemove:(id:string)=>Promise<void>;onRestoreMonitoring:(id:string)=>Promise<void>}) {
+function BookmarkPanel({bookmarks,exclusions,matches,message,onRemove,onRestoreMonitoring,onBulkExclude}:{bookmarks:Bookmark[];exclusions:MonitorExclusion[];matches:Record<string,LiveMatch>;message:string;onRemove:(id:string)=>Promise<void>;onRestoreMonitoring:(id:string)=>Promise<void>;onBulkExclude:(items:Bookmark[])=>Promise<void>}) {
   const excludedIds=new Set(exclusions.map(row=>row.fixtureId));
   const dates=useMemo(()=>[...new Set(bookmarks.map(bookmarkDate).filter(Boolean))].sort(),[bookmarks]);
   const [selectedDate,setSelectedDate]=useState('');
+  const [selectedIds,setSelectedIds]=useState<string[]>([]);
   const activeDate=dates.includes(selectedDate)?selectedDate:(dates[0]??'');
   const visibleBookmarks=bookmarks.filter(bookmark=>bookmarkDate(bookmark)===activeDate).sort((a,b)=>Date.parse(a.kickoffUtc)-Date.parse(b.kickoffUtc));
-  return <section className="bookmark-panel"><div className="bookmark-heading"><div><span>BOOKMARKS</span><strong>{bookmarks.length}</strong></div><small>{message||'kickoff 3分前から自動Socket監視'}</small></div>{dates.length>0&&<label className="bookmark-date-filter">表示日 <select value={activeDate} onChange={event=>setSelectedDate(event.target.value)}>{dates.map(date=><option key={date} value={date}>{formatBookmarkDate(date)}</option>)}</select><small>開始時刻順（00:00 → 23:59）</small></label>}<div className="bookmark-list">{bookmarks.length?visibleBookmarks.map(b=><article key={b.fixtureId}><div><b>{b.home} vs {b.away}</b><small>{b.country} · {b.league}</small></div><time>{new Date(b.kickoffUtc).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'})}</time><span className={`bookmark-status ${excludedIds.has(b.fixtureId)?'excluded':b.status}`}>{excludedIds.has(b.fixtureId)?'LIVE画面から非表示':matches[b.fixtureId]?.subscriptionState??b.status}</span>{b.relatedTeamName&&<em>好調: {b.relatedTeamName}</em>}{excludedIds.has(b.fixtureId)&&<button onClick={()=>void onRestoreMonitoring(b.fixtureId)}>LIVE画面へ戻す</button>}<button onClick={()=>void onRemove(b.fixtureId)}>Bookmarkを外す</button></article>):<p>{activeDate?'この日のBookmarkはありません':'Bookmarkはまだありません'}</p>}</div></section>;
+  const selectable=visibleBookmarks.filter((bookmark)=>!excludedIds.has(bookmark.fixtureId));
+  const selected=selectable.filter((bookmark)=>selectedIds.includes(bookmark.fixtureId));
+  const allSelected=selectable.length>0&&selected.length===selectable.length;
+  function toggle(id:string) { setSelectedIds((now)=>now.includes(id)?now.filter((value)=>value!==id):[...now,id]); }
+  function toggleAll() { setSelectedIds(allSelected?[]:selectable.map((bookmark)=>bookmark.fixtureId)); }
+  async function excludeSelected() { await onBulkExclude(selected); setSelectedIds([]); }
+  return <section className="bookmark-panel"><div className="bookmark-heading"><div><span>BOOKMARKS</span><strong>{bookmarks.length}</strong></div><small>{message||'kickoff 3分前から自動Socket監視'}</small></div>{dates.length>0&&<label className="bookmark-date-filter">表示日 <select value={activeDate} onChange={event=>{setSelectedDate(event.target.value);setSelectedIds([])}}>{dates.map(date=><option key={date} value={date}>{formatBookmarkDate(date)}</option>)}</select><small>開始時刻順（00:00 → 23:59）</small></label>}<div className="bulk-actions bookmark-bulk-actions"><label><input type="checkbox" checked={allSelected} onChange={toggleAll} disabled={!selectable.length} /> この日の監視対象をすべて選択</label><button className="danger" disabled={!selected.length} onClick={()=>void excludeSelected()}>選択した{selected.length}試合をLIVE画面から外す</button><small>Bookmarkと保存済み履歴は残ります。</small></div><div className="bookmark-list">{bookmarks.length?visibleBookmarks.map(b=><article key={b.fixtureId}><label className="bulk-choice"><input aria-label={`${b.home} vs ${b.away}を監視対象外にするため選択`} type="checkbox" disabled={excludedIds.has(b.fixtureId)} checked={selectedIds.includes(b.fixtureId)} onChange={()=>toggle(b.fixtureId)} /></label><div><b>{b.home} vs {b.away}</b><small>{b.country} · {b.league}</small></div><time>{new Date(b.kickoffUtc).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'})}</time><span className={`bookmark-status ${excludedIds.has(b.fixtureId)?'excluded':b.status}`}>{excludedIds.has(b.fixtureId)?'LIVE画面から非表示':matches[b.fixtureId]?.subscriptionState??b.status}</span>{b.relatedTeamName&&<em>好調: {b.relatedTeamName}</em>}{excludedIds.has(b.fixtureId)&&<button onClick={()=>void onRestoreMonitoring(b.fixtureId)}>LIVE画面へ戻す</button>}<button onClick={()=>void onRemove(b.fixtureId)}>Bookmarkを外す</button></article>):<p>{activeDate?'この日のBookmarkはありません':'Bookmarkはまだありません'}</p>}</div></section>;
 }
 
 function bookmarkDate(bookmark: Bookmark) {
@@ -354,7 +402,7 @@ function formatBookmarkDate(value: string) {
   return `${year}年${month}月${day}日`;
 }
 
-function ManagementBoard(props: { bookmarks:Bookmark[]; exclusions:MonitorExclusion[]; matches:Record<string,LiveMatch>; message:string; onRemove:(id:string)=>Promise<void>; onRestoreMonitoring:(id:string)=>Promise<void>; onApplySavedAuto:()=>Promise<void>; applyingSavedAuto:boolean }) {
+function ManagementBoard(props: { bookmarks:Bookmark[]; exclusions:MonitorExclusion[]; matches:Record<string,LiveMatch>; message:string; onRemove:(id:string)=>Promise<void>; onRestoreMonitoring:(id:string)=>Promise<void>; onBulkExclude:(items:Bookmark[])=>Promise<void>; onApplySavedAuto:()=>Promise<void>; applyingSavedAuto:boolean }) {
   return <section className="management-stage"><div className="management-intro"><span>MANAGEMENT</span><h1>Bookmark・監視対象外・保存済みデータ</h1><p>LIVE監視中に常時見る必要のない管理項目をここへまとめています。履歴データは削除されません。</p><button className="secondary" disabled={props.applyingSavedAuto} onClick={()=>void props.onApplySavedAuto()}>{props.applyingSavedAuto?'AUTO監視へ反映中…':'保存済み調子分析をAUTO監視へ反映（REST 0）'}</button><small>最新の保存済みform候補だけを、正式GOAL league IDのallowlistで再判定します。GOAL APIは呼びません。</small></div><BookmarkPanel {...props} /><div className="management-links"><a href="/live-history"><b>LIVE履歴</b><small>終了済み・途中終了をD1のsnapshotとsignalから確認</small></a><a href="/odds"><b>オッズ一覧</b><small>保存したオッズ取得履歴</small></a><a href="/analysis"><b>分析データ</b><small>AI分析用JSON・結果データ</small></a><a href="/form-history"><b>調子分析履歴</b><small>過去の直近5試合分析</small></a><a href="/monitor-exclusions"><b>監視対象外リスト</b><small>Bookmarkを残したままLIVE画面から隠した試合</small></a></div></section>;
 }
 
