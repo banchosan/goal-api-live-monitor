@@ -21,6 +21,25 @@ type MonitorEvent = { sessionId: string; fixtureId: string; eventType: string; r
 type Bookmark = { fixtureId:string;home:string;away:string;league:string;country:string;kickoffUtc:string;reason:string;relatedTeamName?:string|null;status:'waiting'|'monitoring'|'finished'|'removed';updatedAt:string };
 type MonitorExclusion = { fixtureId:string;home:string;away:string;reason:string;excludedAt:string;updatedAt:string };
 
+function hasStats(value: Stat[] | null | undefined) { return Boolean(value?.length); }
+function checkpointFallback(match: LiveMatch, history: Partial<LiveMatch>): LiveMatch {
+  // The current socket frame remains authoritative for current score, status,
+  // and statistics. Persisted history only fills the four display checkpoints
+  // that an already-running older Collector cannot expose in its memory.
+  if (!match.stats.length) return { ...match, ...history, snapshots: match.snapshots, selectedSnapshotId: match.selectedSnapshotId } as LiveMatch;
+  return {
+    ...match,
+    minute65Stats: hasStats(match.minute65Stats) ? match.minute65Stats : history.minute65Stats ?? null,
+    minute65: match.minute65 ?? history.minute65 ?? null,
+    minute70Stats: hasStats(match.minute70Stats) ? match.minute70Stats : history.minute70Stats ?? null,
+    minute70: match.minute70 ?? history.minute70 ?? null,
+    minute75Stats: hasStats(match.minute75Stats) ? match.minute75Stats : history.minute75Stats ?? null,
+    minute75: match.minute75 ?? history.minute75 ?? null,
+    minute80Stats: hasStats(match.minute80Stats) ? match.minute80Stats : history.minute80Stats ?? null,
+    minute80: match.minute80 ?? history.minute80 ?? null,
+  };
+}
+
 export default function Home() {
   const [viewMode, setViewMode] = useState<'live' | 'upcoming' | 'manage'>('live');
   const [fixtures, setFixtures] = useState<Fixture[]>([]);
@@ -227,21 +246,21 @@ export default function Home() {
   }
   useEffect(() => { matchesRef.current = matches; }, [matches]);
   useEffect(() => {
-    const fixtureIds = Object.keys(matches); if (!fixtureIds.length) return;
+    const fixtureIds = Object.keys(matches).sort(); if (!fixtureIds.length) return;
     let cancelled = false;
-    void fetch(`/api/live-card-history?fixtureIds=${encodeURIComponent(fixtureIds.join(','))}`, { cache: 'no-store' })
-      .then(async (response) => response.ok ? response.json() : { fixtures: {} })
-      .then((data) => {
-        if (cancelled) return;
-        const saved = data.fixtures as Record<string, Partial<LiveMatch>>;
-        setMatches((current) => Object.fromEntries(Object.entries(current).map(([fixtureId, match]) => {
-          const history = saved[fixtureId];
-          // A live socket update always wins. Saved data is only a display
-          // fallback when the new/restarted subscription has no update yet.
-          return [fixtureId, history && !match.stats.length ? { ...match, ...history, snapshots: match.snapshots, selectedSnapshotId: match.selectedSnapshotId } : match];
-        })));
-      }).catch(() => undefined);
-    return () => { cancelled = true; };
+    const hydrateCheckpoints = () => {
+      void fetch(`/api/live-card-history?fixtureIds=${encodeURIComponent(fixtureIds.join(','))}`, { cache: 'no-store' })
+        .then(async (response) => response.ok ? response.json() : { fixtures: {} })
+        .then((data) => {
+          if (cancelled) return;
+          const saved = data.fixtures as Record<string, Partial<LiveMatch>>;
+          setMatches((current) => Object.fromEntries(Object.entries(current).map(([fixtureId, match]) => {
+            const history = saved[fixtureId]; return [fixtureId, history ? checkpointFallback(match, history) : match];
+          })));
+        }).catch(() => undefined);
+    };
+    hydrateCheckpoints(); const timer=window.setInterval(hydrateCheckpoints,5_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
   }, [Object.keys(matches).sort().join(',')]);
   useEffect(() => {
     const fixtureIds = Object.keys(matches);
@@ -262,7 +281,7 @@ export default function Home() {
         const data = await response.json(); if (cancelled) return;
         sessionIdRef.current = data.sessionId ?? ''; setCollectorRequests(Number(data.goalApiRequests ?? 0));
         setFrameCount((data.fixtures ?? []).reduce((sum: number, fixture: LiveMatch) => sum + Number(fixture.updates ?? 0), 0));
-        if (data.fixtures?.length) { const hidden=new Set([...hiddenFixtureIdsRef.current,...excludedFixtureIdsRef.current]); setMatches((current) => Object.fromEntries(visibleCollectorFixtures(data.fixtures as LiveMatch[], hidden).map((fixture) => { const prior=current[fixture.id]; const saved=(!fixture.stats?.length&&prior?.historyFallback)?prior:null; return [fixture.id, { ...fixture, ...(saved ? { status:saved.status,stats:saved.stats,updatedAt:saved.updatedAt,lastReceivedAt:saved.lastReceivedAt,updates:saved.updates,ended:saved.ended,htStats:saved.htStats,daCutoffStats:saved.daCutoffStats,daCutoffMinute:saved.daCutoffMinute,koCutoffStats:saved.koCutoffStats,koCutoffMinute:saved.koCutoffMinute,minute65Stats:saved.minute65Stats,minute65:saved.minute65,minute70Stats:saved.minute70Stats,minute70:saved.minute70,minute75Stats:saved.minute75Stats,minute75:saved.minute75,minute80Stats:saved.minute80Stats,minute80:saved.minute80,historyFallback:true } : { updatedAt: fixture.updatedAt ? new Date(fixture.updatedAt).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' }) : undefined }), snapshots: prior?.snapshots ?? [], selectedSnapshotId: prior?.selectedSnapshotId }]; }))); }
+        if (data.fixtures?.length) { const hidden=new Set([...hiddenFixtureIdsRef.current,...excludedFixtureIdsRef.current]); setMatches((current) => Object.fromEntries(visibleCollectorFixtures(data.fixtures as LiveMatch[], hidden).map((fixture) => { const prior=current[fixture.id]; const saved=(!fixture.stats?.length&&prior?.historyFallback)?prior:null; const currentFixture={ ...fixture, ...(saved ? { status:saved.status,stats:saved.stats,updatedAt:saved.updatedAt,lastReceivedAt:saved.lastReceivedAt,updates:saved.updates,ended:saved.ended,htStats:saved.htStats,daCutoffStats:saved.daCutoffStats,daCutoffMinute:saved.daCutoffMinute,koCutoffStats:saved.koCutoffStats,koCutoffMinute:saved.koCutoffMinute,historyFallback:true } : { updatedAt: fixture.updatedAt ? new Date(fixture.updatedAt).toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo' }) : undefined }), snapshots: prior?.snapshots ?? [], selectedSnapshotId: prior?.selectedSnapshotId } as LiveMatch; return [fixture.id, prior ? checkpointFallback(currentFixture, prior) : currentFixture]; }))); }
         if (data.fixtures?.length && data.sessionId && Date.now() - lastSignalPollAtRef.current >= 5_000) { lastSignalPollAtRef.current=Date.now(); const fixtureIds=encodeURIComponent((data.fixtures as LiveMatch[]).map((fixture)=>fixture.id).join(',')); const sessionId=encodeURIComponent(String(data.sessionId)); void fetch(`/api/live-signals?fixtureIds=${fixtureIds}&sessionId=${sessionId}`,{cache:'no-store'}).then(async(response)=>{if(!response.ok)return;const signalBody=await response.json();if(cancelled)return;const grouped:Record<string,LiveSignal[]>={};for(const signal of signalBody.signals??[])(grouped[signal.providerFixtureId]??=[]).push(signal);setLiveSignals(grouped);}).catch(()=>undefined); }
         if (data.active && data.connectionState === 'live') { setConnection('live'); setMessage(`${data.fixtures.length}試合を独立Collectorで監視中。ブラウザを再読込しても収集は継続します。`); }
         else if (data.active) { setConnection('connecting'); setMessage(data.connectionState === 'reconnect_wait' ? `Socket切断を検知。再接続待機中（試行 ${data.reconnectAttempt}）` : 'CollectorがWebSocketへ接続中…'); }
