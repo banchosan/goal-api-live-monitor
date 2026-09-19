@@ -160,7 +160,7 @@ export default function Home() {
       const diagnostics = data.diagnostics ?? {};
       const detail = data.fixtures.length === 0
         ? ` 候補${data.uniqueCandidates ?? data.fetchedCandidates ?? 0}件／日時解析失敗${diagnostics.invalidKickoff ?? 0}件／24時間外${diagnostics.outsideWindow ?? 0}件。`
-        : diagnostics.truncated ? ' APIの安全上限に達したため一部のみです。' : '';
+        : diagnostics.truncated ? ' GOAL APIが同じページを繰り返したため、一部のみです。' : '';
       setUpcomingMessage(`${data.fixtures.length}試合を取得しました（GOAL API ${data.apiRequests} REST request）。${detail}`);
     } catch (error) { setUpcomingMessage(error instanceof Error ? error.message : '取得エラー'); }
     finally { setUpcomingLoading(false); }

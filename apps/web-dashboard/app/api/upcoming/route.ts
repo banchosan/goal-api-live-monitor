@@ -1,9 +1,14 @@
+import { collectOffsetPages } from '@/lib/upcoming-pagination';
+
 export const dynamic = 'force-dynamic';
 
 const API_BASE = 'https://api.goal-api.com/v1';
 const PAGE_SIZE = 100;
-const MAX_PAGES_PER_DATE = 10;
 type RawFixture = Record<string, any>;
+
+class UpcomingApiError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
 
 function utcDate(date: Date) {
   return date.toISOString().slice(0, 10);
@@ -40,30 +45,28 @@ export async function GET() {
     // UTC calendar dates directly, then apply the exact rolling 24h window.
     const dates = [...new Set([utcDate(startedAt), utcDate(endsAt)])];
     for (const date of dates) {
-      let offset = 0;
-      const seenPages = new Set<string>();
-      for (let page = 0; page < MAX_PAGES_PER_DATE; page += 1) {
-        const query = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
-        const response = await fetch(`${API_BASE}/fixtures/date/${encodeURIComponent(date)}?${query}`, {
-          headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
-          cache: 'no-store',
-        });
-        apiRequests += 1;
-        const payload = await response.json();
-        if (!response.ok) {
-          const detail = payload?.details ? JSON.stringify(payload.details) : payload?.message ?? payload?.error ?? payload?.code;
-          return Response.json({ error: `GOAL API HTTP ${response.status}${detail ? `: ${String(detail)}` : ''}`, apiRequests }, { status: response.status });
-        }
+      const collected = await collectOffsetPages({
+        pageSize: PAGE_SIZE,
+        signature: (items) => items.map(fixtureId).filter(Boolean).join('|'),
+        loadPage: async (offset) => {
+          const query = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
+          const response = await fetch(`${API_BASE}/fixtures/date/${encodeURIComponent(date)}?${query}`, {
+            headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+            cache: 'no-store',
+          });
+          apiRequests += 1;
+          const payload = await response.json();
+          if (!response.ok) {
+            const detail = payload?.details ? JSON.stringify(payload.details) : payload?.message ?? payload?.error ?? payload?.code;
+            throw new UpcomingApiError(response.status, `GOAL API HTTP ${response.status}${detail ? `: ${String(detail)}` : ''}`);
+          }
 
-        const pageFixtures = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.response) ? payload.response : [];
-        const signature = pageFixtures.map(fixtureId).filter(Boolean).join('|');
-        if (signature && seenPages.has(signature)) { truncated = true; break; }
-        if (signature) seenPages.add(signature);
-        rawFixtures.push(...pageFixtures);
-        if (pageFixtures.length === 0 || !payload?.pagination?.hasMore) break;
-        offset += pageFixtures.length;
-        if (page === MAX_PAGES_PER_DATE - 1) truncated = true;
-      }
+          const pageFixtures = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.response) ? payload.response : [];
+          return { items: pageFixtures, hasMore: Boolean(payload?.pagination?.hasMore) };
+        },
+      });
+      rawFixtures.push(...collected.items);
+      truncated ||= collected.truncated;
     }
 
     const startMs = startedAt.getTime();
@@ -106,6 +109,7 @@ export async function GET() {
       diagnostics: { queriedDates: dates, pageSize: PAGE_SIZE, truncated, missingId, invalidKickoff, outsideWindow },
     }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : '取得エラー', apiRequests }, { status: 502 });
+    const status = error instanceof UpcomingApiError ? error.status : 502;
+    return Response.json({ error: error instanceof Error ? error.message : '取得エラー', apiRequests }, { status });
   }
 }
