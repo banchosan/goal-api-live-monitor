@@ -52,6 +52,19 @@ test('keeps a five-win team', () => {
   assert.equal(evaluate('WWWWW').qualified, true);
 });
 
+test('includes a five-match team on a current three-win streak even after two losses', () => {
+  const result = evaluate('LLWWW');
+  assert.equal(result.baseQualified, false);
+  assert.equal(result.recentThreeWins, true);
+  assert.equal(result.qualified, true);
+});
+
+test('does not treat a three-win streak as valid without a complete five-match window', () => {
+  const result = evaluate('LWWW');
+  assert.equal(result.recentThreeWins, false);
+  assert.equal(result.qualified, false);
+});
+
 test('insufficient results are not a candidate and are not marked as recent-form excluded', () => {
   const result = evaluate('WL');
   assert.equal(result.baseQualified, false);

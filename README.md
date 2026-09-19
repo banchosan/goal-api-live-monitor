@@ -119,7 +119,7 @@ upcoming fixtures
 
 ### 5試合Form
 
-対象リーグはDashboardの`isSelectedLeague`定義にあり、国・league表記を正規化して判定します。Form候補条件は現在、直近5試合で「4勝以上」または「3勝+1分以上」を基準にし、直近2試合がLL / DL / LDなら除外します。
+対象リーグはDashboardの`isSelectedLeague`定義にあり、国・league表記を正規化して判定します。Form候補条件は直近5試合で「4勝以上」「3勝+1分以上」、または直近3試合の3連勝です。直近2試合がLL / DL / LDなら除外します。直近3連勝は、先行する2試合が負けでも（例: L-L-W-W-W）候補になります。
 
 1回のForm分析はユニークteamごとにGOAL APIを1回使います。現在は最大500チームまでを、同時3 requestの逐次batchで処理します。対象リーグを広げても一括大量発射にはしません。
 
