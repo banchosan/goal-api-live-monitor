@@ -11,10 +11,11 @@ GOAL APIを使い、サッカーのLIVE試合をWebSocketで収集し、`Dangero
 1. Finderで `操作/` を開き、CollectorとDashboardを起動する。
 2. Dashboardの **24時間分析** で今後24時間のfixtureを取得する。
 3. 必要なら対象リーグを絞り、直近5試合Form分析を実行する。
-4. 好調候補・今後の試合をBookmarkする。複数選択から一括Bookmarkもできる。
-5. Bookmark済み試合はkickoff約3分前から既存SchedulerがCollectorへ渡す。
-6. **LIVE監視** でSocketのcurrent stats、25分・HT→65分のsignal、後半の区間比較を確認する。
-7. 終了済み試合は **LIVE履歴** で確認する。Collectorの現在メモリから消えても、保存済みデータは残る。
+4. 好調候補を確認し、必要なら一括Bookmarkする。一括選択は、5試合Formで合格したfixtureだけが対象。
+5. 過去の結果は **調子分析履歴** から再表示できる。必要なら保存済み候補だけでオッズ取得をresumeする。
+6. Bookmark済み試合はkickoff約3分前から既存SchedulerがCollectorへ渡す。
+7. **LIVE監視** でSocketのcurrent stats、25分・HT→65分のsignal、後半の区間比較を確認する。
+8. 終了済み試合は **LIVE履歴** で確認する。Collectorの現在メモリから消えても、保存済みデータは残る。
 
 通常の起動はFinderの `.command` を使えばよく、Codexを毎回呼ぶ必要はありません。
 
@@ -23,7 +24,8 @@ GOAL APIを使い、サッカーのLIVE試合をWebSocketで収集し、`Dangero
 | 画面 | 用途 | source of truth |
 | --- | --- | --- |
 | LIVE監視 | 今まさにSocketで受信している試合の確認・手動snapshot・signal表示 | Collector current state + 保存済みfallback |
-| 24時間分析 | 今後24時間のfixture、5試合Form分析、オッズ取得 | GOAL API取得結果・保存済みForm run |
+| 24時間分析 | 今後24時間のfixture、5試合Form分析、好調候補の一括Bookmark、オッズ取得 | GOAL API取得結果・保存済みForm run |
+| 調子分析履歴 | 過去の5試合Form run、候補の再確認・オッズresume | `form_analysis_runs` |
 | 管理 | Bookmark、監視対象外、AUTO_FORMの反映 | `fixture_bookmarks` / exclusions |
 | LIVE履歴 | 完走・中断済みの試合を後から確認 | `live_snapshots` / `live_signals` / `monitor_events` |
 | オッズ一覧・分析データ | 保存済みオッズ・結果・分析用出力 | raw + typed PRE-MATCH tables |
@@ -119,7 +121,11 @@ upcoming fixtures
 
 対象リーグはDashboardの`isSelectedLeague`定義にあり、国・league表記を正規化して判定します。Form候補条件は現在、直近5試合で「4勝以上」または「3勝+1分以上」を基準にし、直近2試合がLL / DL / LDなら除外します。
 
-Form runは保存されるため、保存済み候補からオッズだけを再取得できます。この導線ではGOALのupcoming / form APIを再消費せず、必要なAPI-Football oddsだけを使います。
+1回のForm分析はユニークteamごとにGOAL APIを1回使います。現在は最大500チームまでを、同時3 requestの逐次batchで処理します。対象リーグを広げても一括大量発射にはしません。
+
+Form runは保存されるため、保存済み候補からオッズだけを再取得できます。この導線ではGOALのupcoming / form APIを再消費せず、必要なAPI-Football oddsだけを使います。オッズは40 fixture単位で進め、成功済みraw odds snapshotを確認して未完了分だけresumeします。
+
+**調子分析履歴** は標準カード表示に加え、`国・リーグ別`表示を選べます。🇬🇧 England / 🇪🇸 Spain / 🇩🇪 Germany / 🇮🇹 Italy / 🇫🇷 Franceを先頭固定にし、残りの国・各国のleagueはアルファベット順です。
 
 ### RAW と TYPED
 
