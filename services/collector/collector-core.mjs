@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { MAX_CONCURRENT_LIVE_FIXTURES } from './monitoring-limits.mjs';
 
 const TERMINAL = new Set(['FT', 'FINISHED', 'AFTER_ET', 'AFTER_PEN', 'CANCELLED', 'ABANDONED', 'AWARDED']);
 const providerTimestamp = (data) => data?.timestamp ?? data?.updated_at ?? data?.updatedAt ?? null;
@@ -28,7 +29,7 @@ export class GoalApiCollector {
   status() { return { active: this.desired, sessionId: this.sessionId, connectionId: this.connectionId, connectionState: this.connectionState, authenticated: this.authenticated, reconnectAttempt: this.reconnectAttempt, goalApiRequests: this.goalApiRequests, tokenRequestsByReason: structuredClone(this.tokenRequestsByReason), reconnectsByReason: structuredClone(this.reconnectsByReason), lastError: this.lastError, lastSocketActivityAt: this.lastSocketActivityAt, connection: this.connection ? structuredClone(this.connection) : null, fixtures: [...this.fixtures.values()].map((fixture) => structuredClone(fixture)) }; }
 
   async start(fixtures) {
-    const selected = normalizeFixtures(fixtures).slice(0, 25);
+    const selected = normalizeFixtures(fixtures).slice(0, MAX_CONCURRENT_LIVE_FIXTURES);
     if (!selected.length) throw new Error('監視対象fixtureがありません');
     if (this.desired) await this.stop('replaced_by_new_session');
     this.sessionId = `${Date.now()}-${randomUUID()}`; this.sequence = 0;
@@ -42,7 +43,7 @@ export class GoalApiCollector {
   async add(fixtures) {
     if (!this.desired || !this.sessionId) throw new Error('監視セッションが開始されていません');
     const activeCount = [...this.fixtures.values()].filter((fixture) => !fixture.ended).length;
-    const additions = normalizeFixtures(fixtures).filter((fixture) => !this.fixtures.has(fixture.id) || this.fixtures.get(fixture.id)?.ended).slice(0, Math.max(0, 25 - activeCount));
+    const additions = normalizeFixtures(fixtures).filter((fixture) => !this.fixtures.has(fixture.id) || this.fixtures.get(fixture.id)?.ended).slice(0, Math.max(0, MAX_CONCURRENT_LIVE_FIXTURES - activeCount));
     for (const fixture of additions) {
       const state = initialState(fixture); this.fixtures.set(fixture.id, state);
       await this.emit('session_add', state, { addedAt: this.now() }, { source: 'system' });

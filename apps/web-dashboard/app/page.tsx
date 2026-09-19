@@ -7,6 +7,7 @@ import { visibleCollectorFixtures, withoutFixture } from '@/lib/live-monitor-sta
 import { displayMatchMinute } from '@/lib/live-minute';
 import { readJsonResponse, responseFailureMessage } from '@/lib/safe-json-response';
 import { isGoalProviderPlaceholderZeroPair } from '@/lib/live-stat-availability';
+import { goalLiveStatNumber, resolveGoalLiveStatistic } from '@/lib/goal-live-stat-resolution';
 import { MAX_FORM_ANALYSIS_TEAMS } from '@/lib/form-analysis-batching';
 import { formQualifiedFixtureIds, qualifiedUnbookmarkedFixtures } from '@/lib/form-bookmark-selection';
 import { groupFormCandidates } from '@/lib/form-history-grouping';
@@ -23,6 +24,7 @@ type FormResult = { result:string; score:string; opponent:string; fixtureId:stri
 type MonitorEvent = { sessionId: string; fixtureId: string; eventType: string; receivedAt: string; status?: string; home?: string; away?: string; homeScore?: string; awayScore?: string; payload: unknown };
 type Bookmark = { fixtureId:string;home:string;away:string;league:string;country:string;kickoffUtc:string;reason:string;relatedTeamName?:string|null;status:'waiting'|'monitoring'|'finished'|'removed';updatedAt:string };
 type MonitorExclusion = { fixtureId:string;home:string;away:string;reason:string;excludedAt:string;updatedAt:string };
+const MAX_CONCURRENT_LIVE_FIXTURES = 20;
 
 function checkpointFallback(match: LiveMatch, history: Partial<LiveMatch>): LiveMatch {
   // The current socket frame remains authoritative for current score, status,
@@ -81,7 +83,7 @@ export default function Home() {
   const lastSignalPollAtRef = useRef(0);
   const visible = useMemo(() => fixtures.filter((f) => `${f.home} ${f.away} ${f.league} ${f.country}`.toLowerCase().includes(query.toLowerCase())), [fixtures, query]);
   const additionalIds = selected.filter((id) => !matches[id] && !monitorExclusions.some((row) => row.fixtureId === id));
-  const availableSlots = Math.max(0, 25 - Object.keys(matches).length);
+  const availableSlots = Math.max(0, MAX_CONCURRENT_LIVE_FIXTURES - Object.keys(matches).length);
   const addableIds = additionalIds.slice(0, availableSlots);
 
   async function loadBookmarks() { try { const response=await fetch('/api/bookmarks',{cache:'no-store'}); if(response.ok)setBookmarks((await response.json()).bookmarks??[]); } catch {} }
@@ -626,8 +628,8 @@ function persistEvents(events: MonitorEvent[]) {
   void fetch('/api/monitor-events', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ events }), keepalive: true }).catch(() => undefined);
 }
 
-function numeric(value: string | number | null) { const found = String(value ?? '').match(/-?\d+(?:\.\d+)?/); return found ? Number(found[0]) : null; }
-function statValue(stats: Stat[], type: string, side: 'home'|'away') { const stat=stats.find((row)=>row.type.trim().toLowerCase()===type.toLowerCase()); return stat?numeric(stat[side]):null; }
+function numeric(value: string | number | null) { return goalLiveStatNumber(value); }
+function statValue(stats: Stat[], type: string, side: 'home'|'away') { const stat=resolveGoalLiveStatistic(stats, [type]); return stat?numeric(stat[side] as string | number | null):null; }
 function displayStat(value: number | null) { return value === null ? '—' : String(value); }
 function statWithIncrease(value: number | null, baseline: number | null, hot = false) { if (value === null) return '—'; const increase = baseline === null ? null : value - baseline; return `${hot ? '🔥 ' : ''}${value}${increase === null ? '' : ` (${signed(increase)})`}`; }
 function signed(value: number) { return value > 0 ? `+${value}` : String(value); }

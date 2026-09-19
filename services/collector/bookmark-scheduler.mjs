@@ -1,3 +1,4 @@
+import { MAX_CONCURRENT_LIVE_FIXTURES } from './monitoring-limits.mjs';
 const DEFAULT_LEAD_MS = 3 * 60_000;
 
 export class BookmarkScheduler {
@@ -21,7 +22,7 @@ export class BookmarkScheduler {
     }
     const refreshed = this.collector.status();
     const monitored = new Set((refreshed.fixtures ?? []).filter((f) => !f.ended).map((f) => String(f.id)));
-    const slots = Math.max(0, 25 - monitored.size);
+    const slots = Math.max(0, MAX_CONCURRENT_LIVE_FIXTURES - monitored.size);
     const eligible = bookmarks.filter((b) => ['waiting', 'monitoring'].includes(b.status) && !excludedIds.has(String(b.fixtureId)) && !monitored.has(String(b.fixtureId)) && (b.status === 'monitoring' || Date.parse(b.kickoffUtc) - this.leadMs <= this.now()));
     const due = eligible
       .sort((a, b) => Date.parse(a.kickoffUtc) - Date.parse(b.kickoffUtc)).slice(0, slots)

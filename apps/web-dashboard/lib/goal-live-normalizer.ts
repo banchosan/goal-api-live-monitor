@@ -1,3 +1,6 @@
+import { isGoalProviderPlaceholderZeroPair } from './live-stat-availability.ts';
+import { goalLiveStatNumber, resolveGoalLiveStatistic } from './goal-live-stat-resolution.ts';
+
 export type LiveStatistic = { type?: unknown; home?: unknown; away?: unknown };
 
 export type NormalizedLiveSnapshot = {
@@ -57,11 +60,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 function numberOrNull(value: unknown): number | null {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-  const text = String(value ?? '').replace('%', '').trim();
-  if (!text) return null;
-  const parsed = Number(text);
-  return Number.isFinite(parsed) ? parsed : null;
+  return goalLiveStatNumber(value);
 }
 
 function parseStatus(value: unknown, clock: unknown = null) {
@@ -78,7 +77,7 @@ function parseStatus(value: unknown, clock: unknown = null) {
 }
 
 function statistic(statistics: LiveStatistic[], names: string[]) {
-  return statistics.find((item) => names.includes(String(item.type ?? '').trim().toLowerCase())) ?? null;
+  return resolveGoalLiveStatistic(statistics, names);
 }
 
 function sides(statistics: LiveStatistic[], name: keyof typeof aliases, status: string | null) {
@@ -122,4 +121,3 @@ export function normalizeGoalLiveSnapshot(event: MonitorMatchUpdate, coreFixture
     xgHome: xg.home, xgAway: xg.away, rawStatistics: statistics,
   };
 }
-import { isGoalProviderPlaceholderZeroPair } from './live-stat-availability.ts';

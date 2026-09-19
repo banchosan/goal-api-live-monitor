@@ -32,6 +32,20 @@ test('normalizes observed GOAL aliases while preserving zero and null distinctly
   assert.equal(snapshot.passesAccurateHome, 88); assert.equal(snapshot.cornersHome, null);
 });
 
+test('resolves duplicated GOAL statistics without changing their raw evidence', () => {
+  const statistics = [
+    { type: 'Corners', home: '3', away: '1' }, { type: 'Ball Possession', home: '0%', away: '0%' },
+    { type: 'Corners', home: '2', away: '1' }, { type: 'Ball Possession', home: '42%', away: '58%' },
+  ];
+  const snapshot = normalizeGoalLiveSnapshot(event({ data: { match_status: 'HT', statistics } }), 'goal-api:goal-fixture-1');
+  assert.ok(snapshot);
+  assert.equal(snapshot.cornersHome, 3);
+  assert.equal(snapshot.cornersAway, 1);
+  assert.equal(snapshot.possessionHome, 42);
+  assert.equal(snapshot.possessionAway, 58);
+  assert.deepEqual(snapshot.rawStatistics, statistics);
+});
+
 test('malformed values and missing statistics remain null without rejecting a valid match update', () => {
   const snapshot = normalizeGoalLiveSnapshot(event({ data: { match_status: 'HT', match_hometeam_score: 'n/a', statistics: [
     { type: 'Corners', home: 'not-number', away: null }, { type: null, home: '1', away: '2' },
