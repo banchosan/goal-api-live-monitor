@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { ensureRuntimeSchema } from '@/db/schema';
 import { fetchTeamResults, TEAM_RESULTS_CONCURRENCY } from '@/lib/team-results-client';
+import { MAX_FORM_ANALYSIS_TEAMS, splitFormAnalysisBatches } from '@/lib/form-analysis-batching';
 import { evaluateFormCandidate, toChronologicalResults } from '@/lib/form-candidate-rules';
 import { saveTypedFormObservations } from '@/lib/prematch-dual-write';
 import { autoLeagueEligibility, writeGoalFixtureIdentity, type GoalFixtureInput } from '@/lib/goal-auto-form';
@@ -117,12 +118,14 @@ export async function POST(request: Request) {
     if (fixture.awayTeamId && !teams.has(fixture.awayTeamId)) teams.set(fixture.awayTeamId, { teamId: fixture.awayTeamId, team: fixture.away, side: 'away', opponent: fixture.home, fixture });
   }
   const tasks = [...teams.values()];
-  if (tasks.length > 250) return Response.json({ error: '分析対象が250チームを超えています。リーグを絞り込んでください。', apiRequests: 0 }, { status: 400 });
+  if (tasks.length > MAX_FORM_ANALYSIS_TEAMS) return Response.json({ error: `分析対象が${MAX_FORM_ANALYSIS_TEAMS}チームを超えています。リーグを絞り込んでください。`, apiRequests: 0 }, { status: 400 });
 
   let apiRequests = 0;
   const checked: any[] = [];
-  for (let index = 0; index < tasks.length; index += BATCH_SIZE) {
-    const batch = tasks.slice(index, index + BATCH_SIZE);
+  // Each batch is awaited before the next begins.  Raising the overall scope
+  // therefore does not increase provider concurrency or turn this into a
+  // giant Promise.all request.
+  for (const batch of splitFormAnalysisBatches(tasks, BATCH_SIZE)) {
     const rows = await Promise.all(batch.map(async (task) => {
       const fetched = await fetchTeamResults({ apiKey, teamId: task.teamId });
       apiRequests += fetched.attempts;

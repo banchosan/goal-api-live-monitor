@@ -7,6 +7,8 @@ import { visibleCollectorFixtures, withoutFixture } from '@/lib/live-monitor-sta
 import { displayMatchMinute } from '@/lib/live-minute';
 import { readJsonResponse, responseFailureMessage } from '@/lib/safe-json-response';
 import { isGoalProviderPlaceholderZeroPair } from '@/lib/live-stat-availability';
+import { MAX_FORM_ANALYSIS_TEAMS } from '@/lib/form-analysis-batching';
+import { formQualifiedFixtureIds, qualifiedUnbookmarkedFixtures } from '@/lib/form-bookmark-selection';
 
 type Fixture = { id: string; league: string; country: string; home: string; away: string; homeScore: string; awayScore: string; status: string; kickoffUtc?: string };
 type UpcomingFixture = { id: string; league: string; leagueId?: string; country: string; home: string; away: string; homeTeamId: string; awayTeamId: string; kickoffUtc: string; kickoffJst: string; status: string };
@@ -337,10 +339,11 @@ function UpcomingBoard({ fixtures, loading, onRest, bookmarks, onBookmark, onBul
   const [selectedFixtureIds, setSelectedFixtureIds] = useState<string[]>([]);
   const shown = scope === 'big5' ? fixtures.filter(isSelectedLeague) : fixtures;
   const uniqueTeams = new Set(shown.flatMap((fixture) => [fixture.homeTeamId, fixture.awayTeamId]).filter(Boolean)).size;
-  const bookmarkable=shown.filter((fixture)=>!bookmarks.some((bookmark)=>bookmark.fixtureId===fixture.id));
+  const qualifiedFixtureIds=formQualifiedFixtureIds(candidates);
+  const bookmarkable=qualifiedUnbookmarkedFixtures(shown,candidates,bookmarks);
   const selectedFixtures=bookmarkable.filter((fixture)=>selectedFixtureIds.includes(fixture.id));
   const allBookmarkableSelected=bookmarkable.length>0&&selectedFixtures.length===bookmarkable.length;
-  function toggleBookmarkSelection(id:string) { setSelectedFixtureIds((now)=>now.includes(id)?now.filter((value)=>value!==id):[...now,id]); }
+  function toggleBookmarkSelection(id:string) { if (!qualifiedFixtureIds.has(id)) return; setSelectedFixtureIds((now)=>now.includes(id)?now.filter((value)=>value!==id):[...now,id]); }
   function toggleAllBookmarkable() { setSelectedFixtureIds(allBookmarkableSelected?[]:bookmarkable.map((fixture)=>fixture.id)); }
 
   async function analyzeForm() {
@@ -352,6 +355,7 @@ function UpcomingBoard({ fixtures, loading, onRest, bookmarks, onBookmark, onBul
       onRest(Number(data.apiRequests ?? 0));
       if (!response.ok) throw new Error(data.error || '直近成績を取得できませんでした');
       setCandidates(data.candidates ?? []);
+      setSelectedFixtureIds([]);
       setFormRunId(data.runId ?? '');
       setOddsMessage('');
       const outcomes = Object.entries(data.outcomeCounts ?? {}).map(([name, count]) => `${name} ${count}`).join(' / ');
@@ -380,16 +384,16 @@ function UpcomingBoard({ fixtures, loading, onRest, bookmarks, onBookmark, onBul
 
   return <section className="upcoming-stage">
     {!fixtures.length ? <div className="hero-empty upcoming-empty"><div className="pulse-rings"><span /><span /><b>24h</b></div><h2>{loading ? '試合一覧を取得しています' : 'まだ試合を取得していません'}</h2><p>取得ボタン1回で、現在時刻から24時間以内にキックオフする試合だけを表示します。</p></div> : <>
-      <div className="scope-panel"><div><button className={scope === 'big5' ? 'active' : ''} onClick={() => { setScope('big5'); setCandidates([]); setAnalysisMessage(''); }}>指定リーグ</button><button className={scope === 'all' ? 'active' : ''} onClick={() => { setScope('all'); setCandidates([]); setAnalysisMessage(''); }}>全試合</button></div><div className="actions"><a className="secondary" href="/form-history">保存済み候補からオッズ取得</a><button className="analyze-button" disabled={analyzing || !shown.length || uniqueTeams > 250} onClick={analyzeForm}>{analyzing ? '分析中…' : `直近5試合を分析（最大 ${uniqueTeams} REST）`}</button></div></div>
+      <div className="scope-panel"><div><button className={scope === 'big5' ? 'active' : ''} onClick={() => { setScope('big5'); setCandidates([]); setAnalysisMessage(''); }}>指定リーグ</button><button className={scope === 'all' ? 'active' : ''} onClick={() => { setScope('all'); setCandidates([]); setAnalysisMessage(''); }}>全試合</button></div><div className="actions"><a className="secondary" href="/form-history">保存済み候補からオッズ取得</a><button className="analyze-button" disabled={analyzing || !shown.length || uniqueTeams > MAX_FORM_ANALYSIS_TEAMS} onClick={analyzeForm}>{analyzing ? '分析中…' : `直近5試合を分析（最大 ${uniqueTeams} REST）`}</button></div></div>
       <div className="scope-note">絞り込みは取得済みfixture内で行うため追加REST 0。直近成績はユニークteamごとに1 RESTです。</div>
       <div className="upcoming-summary"><span>{scope === 'big5' ? 'SELECTED LEAGUES' : 'UPCOMING FIXTURES'}</span><strong>{shown.length}</strong><small>現在時刻から24時間以内・JST順 · {uniqueTeams}チーム</small></div>
-      <div className="bulk-actions"><label><input type="checkbox" checked={allBookmarkableSelected} onChange={toggleAllBookmarkable} disabled={!bookmarkable.length} /> この一覧の未Bookmarkをすべて選択</label><button disabled={!selectedFixtures.length} onClick={()=>void onBulkBookmark(selectedFixtures)}>★ 選択した{selectedFixtures.length}試合をBookmark</button></div>
+      <div className="bulk-actions"><label><input type="checkbox" checked={allBookmarkableSelected} onChange={toggleAllBookmarkable} disabled={!bookmarkable.length} /> 5試合Formで好調な未Bookmark試合をすべて選択</label><button disabled={!selectedFixtures.length} onClick={()=>void onBulkBookmark(selectedFixtures)}>★ 好調な{selectedFixtures.length}試合をBookmark</button><small>{candidates.length ? `Form合格fixture ${qualifiedFixtureIds.size} / 一括Bookmark可能 ${bookmarkable.length}` : '一括Bookmarkは、まず直近5試合の分析後に利用できます。'}</small></div>
       {analysisMessage && <div className="analysis-message">{analysisMessage}</div>}
       {candidates.length > 0 && <div className="odds-fetch-row"><button disabled={oddsLoading} onClick={fetchCandidateOdds}>{oddsLoading ? 'オッズ取得・保存中…' : `候補${new Set(candidates.map(c => c.fixtureId)).size}試合のオッズを取得・保存`}</button><a href="/odds">保存済みオッズを見る →</a></div>}
       {oddsMessage && <div className="analysis-message">{oddsMessage}</div>}
       {candidates.length > 0 && <section className="candidate-section"><div className="candidate-title"><span>WATCH CANDIDATES</span><strong>4勝以上 または 3勝＋1分以上（直近2戦 LL / DL / LD は除外）</strong></div><div className="candidate-grid">{candidates.map((candidate) => {const fixture=fixtures.find(f=>f.id===candidate.fixtureId);return <article className="candidate-card" key={`${candidate.fixtureId}-${candidate.team}`}><div><time>{candidate.kickoffJst} JST</time><b>{candidate.wins}W {candidate.draws}D / 5</b></div><h3>{candidate.team}</h3><p>{candidate.side.toUpperCase()} vs {candidate.opponent}</p><small>{candidate.country} · {candidate.league}</small><div className="form-strip">{candidate.last5.map((result, index) => <span className={result.result.toLowerCase()} title={`${result.opponent} ${result.score}`} key={`${result.fixtureId}-${index}`}>{result.result}</span>)}</div>{fixture&&<button className="bookmark-button" disabled={bookmarks.some(b=>b.fixtureId===fixture.id)} onClick={()=>void onBookmark(fixture,'good-form',candidate.teamId,candidate.team)}>★ 好調候補をBookmark</button>}</article>})}</div></section>}
       <div className="upcoming-list">{shown.map((fixture) => <article className="upcoming-row" key={fixture.id}>
-        <label className="bulk-choice"><input aria-label={`${fixture.home} vs ${fixture.away}を一括Bookmark用に選択`} type="checkbox" disabled={bookmarks.some((bookmark)=>bookmark.fixtureId===fixture.id)} checked={selectedFixtureIds.includes(fixture.id)} onChange={()=>toggleBookmarkSelection(fixture.id)} /></label>
+        <label className="bulk-choice"><input aria-label={`${fixture.home} vs ${fixture.away}を好調候補の一括Bookmark用に選択`} title={qualifiedFixtureIds.has(fixture.id) ? 'Form合格: 一括Bookmark対象' : 'Form未合格: 一括Bookmark対象外'} type="checkbox" disabled={bookmarks.some((bookmark)=>bookmark.fixtureId===fixture.id)||!qualifiedFixtureIds.has(fixture.id)} checked={selectedFixtureIds.includes(fixture.id)} onChange={()=>toggleBookmarkSelection(fixture.id)} /></label>
         <time dateTime={fixture.kickoffUtc}><strong>{fixture.kickoffJst}</strong><small>JST</small></time>
         <div className="upcoming-teams"><span>{fixture.home}</span><i>vs</i><span>{fixture.away}</span></div>
         <div className="upcoming-meta"><strong>{fixture.country}</strong><span>{fixture.league}</span><code>{fixture.id}</code><button className="bookmark-button" disabled={bookmarks.some(b=>b.fixtureId===fixture.id)} onClick={()=>void onBookmark(fixture,'upcoming-manual')}>★ Bookmark</button></div>
