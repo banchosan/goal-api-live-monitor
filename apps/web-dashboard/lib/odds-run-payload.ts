@@ -1,6 +1,16 @@
 type JsonObject = Record<string, unknown>;
 const object = (value: unknown): JsonObject => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {};
 
+/**
+ * `/fixtures?date=` may include every fixture on a busy day. Persisting that
+ * discovery response as one D1 TEXT value can exceed SQLite/D1's value limit.
+ * The odds history only needs the provider fixture records actually selected
+ * for this run; each full odds response remains in odds_snapshots.raw_json.
+ */
+export function compactOddsFixtureResponses(fixtures: unknown[]) {
+  return [{ date: 'selected-fixtures', payload: { response: fixtures } }];
+}
+
 /** Reads both legacy array payloads and resumable batched-run payloads. */
 export function oddsFixtureLookupResponses(raw: string | null | undefined): unknown[] {
   try {
