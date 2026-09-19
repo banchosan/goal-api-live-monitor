@@ -7,7 +7,7 @@ import { visibleCollectorFixtures, withoutFixture } from '@/lib/live-monitor-sta
 import { displayMatchMinute } from '@/lib/live-minute';
 import { readJsonResponse, responseFailureMessage } from '@/lib/safe-json-response';
 import { isGoalProviderPlaceholderZeroPair } from '@/lib/live-stat-availability';
-import { goalLiveStatNumber, resolveGoalLiveStatistic } from '@/lib/goal-live-stat-resolution';
+import { canonicalGoalLiveDisplayStats, goalLiveStatNumber, hasGoalLiveStatisticConflict, resolveGoalLiveStatistic } from '@/lib/goal-live-stat-resolution';
 import { MAX_FORM_ANALYSIS_TEAMS } from '@/lib/form-analysis-batching';
 import { formQualifiedFixtureIds, qualifiedUnbookmarkedFixtures } from '@/lib/form-bookmark-selection';
 import { groupFormCandidates } from '@/lib/form-history-grouping';
@@ -538,7 +538,7 @@ function MatchCard({ match, form, signals, onCapture, onSelectSnapshot, onRemove
     <LateMatchComparisonPanel match={match} />
     <details className="snapshot-panel"><summary>SNAPSHOTS <small>手動スナップ</small></summary><div className="snapshot-actions"><button onClick={onCapture} disabled={!match.stats.length}>現在値をスナップ（REST 0）</button><span>{match.snapshots.length ? `${match.snapshots.length}件保存` : '好きな時点を保存できます'}</span></div>{match.snapshots.length > 0 && <div className="snapshot-tabs">{match.snapshots.map((snapshot) => <button className={snapshot.id === match.selectedSnapshotId ? 'active' : ''} onClick={() => onSelectSnapshot(snapshot.id)} key={snapshot.id}>{formatSnapshotStatus(snapshot.status)} <small>{snapshot.capturedAt}</small></button>)}</div>}</details>
     {selectedSnapshot && <SnapshotDeltaPanel match={match} snapshot={selectedSnapshot} />}
-    {match.stats.length ? <div className="stats"><div className="stat-head"><span>HOME</span><b>CURRENT STATISTICS</b><span>AWAY</span></div>{match.stats.map((s, i) => { const unavailable = isGoalProviderPlaceholderZeroPair(s.type, s.home, s.away, match.status); return <div className="stat-row" key={`${s.type}-${i}`}><strong>{unavailable ? '—' : s.home ?? 'N/A'}</strong><span>{s.type}{unavailable ? '（GOAL API未提供）' : ''}</span><strong>{unavailable ? '—' : s.away ?? 'N/A'}</strong></div>; })}</div> : providerSilent ? <div className="waiting"><p>最初の更新が届かないため、自動再subscribeを{initialResubscribeAttempts}回試しました。GOAL APIの購読ストリームが無応答です。</p></div> : <div className="waiting"><span /><p>{initialResubscribeAttempts ? `最初の更新待ち（自動再subscribe ${initialResubscribeAttempts}/2）` : 'WebSocketの最初のmatch_updateを待っています'}</p></div>}
+    {match.stats.length ? <div className="stats"><div className="stat-head"><span>HOME</span><b>CURRENT STATISTICS</b><span>AWAY</span></div>{canonicalGoalLiveDisplayStats(match.stats).map((s, i) => { const unavailable = isGoalProviderPlaceholderZeroPair(s.type, s.home, s.away, match.status); return <div className="stat-row" key={`${s.type}-${i}`}><strong>{unavailable ? '—' : s.home ?? 'N/A'}</strong><span>{s.type}{unavailable ? '（GOAL API未提供）' : ''}</span><strong>{unavailable ? '—' : s.away ?? 'N/A'}</strong></div>; })}{hasGoalLiveStatisticConflict(match.stats) && <small className="stat-source-warning">⚠ GOAL Socket内で同義統計の値が競合しています。RAWは保存済みですが、このfixtureの統計比較は参考値です。</small>}</div> : providerSilent ? <div className="waiting"><p>最初の更新が届かないため、自動再subscribeを{initialResubscribeAttempts}回試しました。GOAL APIの購読ストリームが無応答です。</p></div> : <div className="waiting"><span /><p>{initialResubscribeAttempts ? `最初の更新待ち（自動再subscribe ${initialResubscribeAttempts}/2）` : 'WebSocketの最初のmatch_updateを待っています'}</p></div>}
   </article>;
 }
 

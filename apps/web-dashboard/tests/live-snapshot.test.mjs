@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeGoalLiveSnapshot } from '../lib/goal-live-normalizer.ts';
+import { canonicalGoalLiveDisplayStats, hasGoalLiveStatisticConflict } from '../lib/goal-live-stat-resolution.ts';
 
 const event = (payload, overrides = {}) => ({
   fixtureId: 'goal-fixture-1', receivedAt: '2026-09-10T20:10:47.223Z', clientEventId: 'session-1:1:goal-fixture-1:match_update',
@@ -44,6 +45,18 @@ test('resolves duplicated GOAL statistics without changing their raw evidence', 
   assert.equal(snapshot.possessionHome, 42);
   assert.equal(snapshot.possessionAway, 58);
   assert.deepEqual(snapshot.rawStatistics, statistics);
+});
+
+test('current-stat display collapses GOAL aliases and surfaces conflicting source values', () => {
+  const statistics = [
+    { type: 'On Target', home: '2', away: '4' }, { type: 'Shots On Goal', home: '3', away: '6' },
+    { type: 'Ball Possession', home: '0%', away: '0%' }, { type: 'Ball Possession', home: '32%', away: '68%' },
+  ];
+  const rows = canonicalGoalLiveDisplayStats(statistics);
+  assert.deepEqual(rows.find((row) => row.type === 'On Target'), { type: 'On Target', home: '2', away: '4' });
+  assert.deepEqual(rows.find((row) => row.type === 'Ball Possession'), { type: 'Ball Possession', home: '32%', away: '68%' });
+  assert.equal(rows.some((row) => row.type === 'Shots On Goal'), false);
+  assert.equal(hasGoalLiveStatisticConflict(statistics), true);
 });
 
 test('malformed values and missing statistics remain null without rejecting a valid match update', () => {

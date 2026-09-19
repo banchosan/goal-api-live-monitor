@@ -44,3 +44,49 @@ export function resolveGoalLiveStatistic(statistics: GoalLiveStatistic[], names:
   }
   return selected;
 }
+
+export type GoalLiveDisplayStat = { type: string; home: unknown; away: unknown };
+
+const DISPLAY_GROUPS = [
+  { label: 'Corners', primary: ['corners'], fallback: [] },
+  { label: 'Attacks', primary: ['attacks'], fallback: [] },
+  { label: 'Dangerous Attacks', primary: ['dangerous attacks'], fallback: [] },
+  { label: 'On Target', primary: ['on target'], fallback: ['shots on goal', 'shots on target'] },
+  { label: 'Off Target', primary: ['off target'], fallback: ['shots off goal'] },
+  { label: 'Ball Possession', primary: ['ball possession', 'possession'], fallback: [] },
+  { label: 'Yellow Cards', primary: ['yellow cards'], fallback: [] },
+  { label: 'Red Cards', primary: ['red cards'], fallback: [] },
+  { label: 'Saves', primary: ['saves'], fallback: [] },
+  { label: 'Passes Total', primary: ['passes total'], fallback: [] },
+  { label: 'Passes Accurate', primary: ['passes accurate'], fallback: [] },
+] as const;
+
+/** One readable row per stat concept; raw duplicate/alias evidence is retained elsewhere. */
+export function canonicalGoalLiveDisplayStats(statistics: GoalLiveStatistic[]): GoalLiveDisplayStat[] {
+  const hidden = new Set<string>(); const rows: GoalLiveDisplayStat[] = [];
+  for (const group of DISPLAY_GROUPS) {
+    [...group.primary, ...group.fallback].forEach((type) => hidden.add(type));
+    const primary = resolveGoalLiveStatistic(statistics, [...group.primary]);
+    const selected = primary ?? resolveGoalLiveStatistic(statistics, [...group.fallback]);
+    if (selected) rows.push({ type: group.label, home: selected.home, away: selected.away });
+  }
+  const seen = new Set(rows.map((row) => normalizedType(row.type)));
+  for (const stat of statistics) {
+    const type = normalizedType(stat?.type);
+    if (!type || hidden.has(type) || seen.has(type)) continue;
+    const selected = resolveGoalLiveStatistic(statistics, [type]);
+    if (!selected) continue;
+    seen.add(type); rows.push({ type: String(selected.type ?? '').trim(), home: selected.home, away: selected.away });
+  }
+  return rows;
+}
+
+/** Same concept sent with different numeric pairs: show a warning, never invent a value. */
+export function hasGoalLiveStatisticConflict(statistics: GoalLiveStatistic[]): boolean {
+  for (const group of DISPLAY_GROUPS) {
+    const candidates = statistics.filter((stat) => [...group.primary, ...group.fallback].includes(normalizedType(stat?.type) as never));
+    const pairs = new Set(candidates.map((stat) => `${goalLiveStatNumber(stat.home)}:${goalLiveStatNumber(stat.away)}`));
+    if (pairs.size > 1) return true;
+  }
+  return false;
+}
