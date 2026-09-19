@@ -201,6 +201,13 @@ export class GoalApiCollector {
     if (minute !== null && minute > 45 && minute <= 80 && nextStats.length) {
       fixture.minute80Stats = structuredClone(nextStats); fixture.minute80 = minute;
     }
+    // A pre-target candidate (for example 46' as the latest state before
+    // 70') must never be presented as a completed comparison checkpoint.
+    // Retain the candidate causally, but expose completion independently.
+    if (minute !== null && minute >= 65) fixture.minute65Ready = true;
+    if (minute !== null && minute >= 70) fixture.minute70Ready = true;
+    if (minute !== null && minute >= 75) fixture.minute75Ready = true;
+    if (minute !== null && minute >= 80) fixture.minute80Ready = true;
     Object.assign(fixture, { home: data.match_hometeam_name ?? fixture.home, away: data.match_awayteam_name ?? fixture.away, homeScore: String(data.match_hometeam_score ?? fixture.homeScore), awayScore: String(data.match_awayteam_score ?? fixture.awayScore), status: nextStatus, stats: structuredClone(nextStats), updates: fixture.updates + 1, updatedAt: receivedAt, lastReceivedAt: receivedAt });
     fixture.subscriptionState = 'receiving';
     this.clearInitialUpdateTimer(fixture);
@@ -324,7 +331,7 @@ function closeCategory(reason) {
   return 'other';
 }
 
-function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, lastGapReportedAt: null, ended: false, htStats: null, daCutoffStats: null, daCutoffMinute: null, koCutoffStats: null, koCutoffMinute: null, minute65Stats: null, minute65: null, minute70Stats: null, minute70: null, minute75Stats: null, minute75: null, minute80Stats: null, minute80: null, subscriptionState: 'not_subscribed', subscribeRequestedAt: null, subscribedAt: null, initialUpdateDeadlineAt: null, initialUpdateResubscribeAttempts: 0, lastRefreshAt: null }; }
+function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, lastGapReportedAt: null, ended: false, htStats: null, daCutoffStats: null, daCutoffMinute: null, koCutoffStats: null, koCutoffMinute: null, minute65Stats: null, minute65: null, minute65Ready: false, minute70Stats: null, minute70: null, minute70Ready: false, minute75Stats: null, minute75: null, minute75Ready: false, minute80Stats: null, minute80: null, minute80Ready: false, subscriptionState: 'not_subscribed', subscribeRequestedAt: null, subscribedAt: null, initialUpdateDeadlineAt: null, initialUpdateResubscribeAttempts: 0, lastRefreshAt: null }; }
 function normalizeFixtures(fixtures) { return Array.isArray(fixtures) ? fixtures.filter((fixture) => fixture?.id).map((fixture) => ({ id: String(fixture.id), league: String(fixture.league ?? ''), country: String(fixture.country ?? ''), home: String(fixture.home ?? 'Home'), away: String(fixture.away ?? 'Away'), homeScore: String(fixture.homeScore ?? '-'), awayScore: String(fixture.awayScore ?? '-'), status: String(fixture.status ?? 'LIVE'), kickoffUtc: fixture.kickoffUtc ? String(fixture.kickoffUtc) : null, monitorSource: String(fixture.monitorSource ?? 'manual') })) : []; }
 
 export function mergeStatistics(previous, incoming) {

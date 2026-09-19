@@ -67,10 +67,10 @@ export async function GET(request: Request) {
         // Do not publish a pre-target candidate. While a fixture is at 46',
         // its latest state is a valid *future* candidate for 65/70/75/80,
         // but it is not yet a completed checkpoint for any of those targets.
-        minute65Stats: latestElapsedMinute !== null && latestElapsedMinute >= 65 && checkpoint65 ? savedStats(checkpoint65.rawStatisticsJson) : null, minute65: latestElapsedMinute !== null && latestElapsedMinute >= 65 ? checkpoint65?.elapsedMinute ?? null : null,
-        minute70Stats: latestElapsedMinute !== null && latestElapsedMinute >= 70 && checkpoint70 ? savedStats(checkpoint70.rawStatisticsJson) : null, minute70: latestElapsedMinute !== null && latestElapsedMinute >= 70 ? checkpoint70?.elapsedMinute ?? null : null,
-        minute75Stats: latestElapsedMinute !== null && latestElapsedMinute >= 75 && checkpoint75 ? savedStats(checkpoint75.rawStatisticsJson) : null, minute75: latestElapsedMinute !== null && latestElapsedMinute >= 75 ? checkpoint75?.elapsedMinute ?? null : null,
-        minute80Stats: latestElapsedMinute !== null && latestElapsedMinute >= 80 && checkpoint80 ? savedStats(checkpoint80.rawStatisticsJson) : null, minute80: latestElapsedMinute !== null && latestElapsedMinute >= 80 ? checkpoint80?.elapsedMinute ?? null : null, historyFallback: true,
+        minute65Stats: latestElapsedMinute !== null && latestElapsedMinute >= 65 && checkpoint65 ? savedStats(checkpoint65.rawStatisticsJson) : null, minute65: latestElapsedMinute !== null && latestElapsedMinute >= 65 ? checkpoint65?.elapsedMinute ?? null : null, minute65Ready: latestElapsedMinute !== null && latestElapsedMinute >= 65,
+        minute70Stats: latestElapsedMinute !== null && latestElapsedMinute >= 70 && checkpoint70 ? savedStats(checkpoint70.rawStatisticsJson) : null, minute70: latestElapsedMinute !== null && latestElapsedMinute >= 70 ? checkpoint70?.elapsedMinute ?? null : null, minute70Ready: latestElapsedMinute !== null && latestElapsedMinute >= 70,
+        minute75Stats: latestElapsedMinute !== null && latestElapsedMinute >= 75 && checkpoint75 ? savedStats(checkpoint75.rawStatisticsJson) : null, minute75: latestElapsedMinute !== null && latestElapsedMinute >= 75 ? checkpoint75?.elapsedMinute ?? null : null, minute75Ready: latestElapsedMinute !== null && latestElapsedMinute >= 75,
+        minute80Stats: latestElapsedMinute !== null && latestElapsedMinute >= 80 && checkpoint80 ? savedStats(checkpoint80.rawStatisticsJson) : null, minute80: latestElapsedMinute !== null && latestElapsedMinute >= 80 ? checkpoint80?.elapsedMinute ?? null : null, minute80Ready: latestElapsedMinute !== null && latestElapsedMinute >= 80, historyFallback: true,
       };
       continue;
     }
@@ -104,10 +104,10 @@ export async function GET(request: Request) {
       updates: events.length, ended: ['FT', 'FINISHED', 'AFTER_ET', 'AFTER_PEN', 'CANCELLED', 'ABANDONED', 'AWARDED'].includes(latest.status.toUpperCase()),
       htStats: ht?.value ?? null, daCutoffStats: cutoff65?.value ?? null, daCutoffMinute: cutoff65?.minute ?? null,
       koCutoffStats: ko?.value ?? null, koCutoffMinute: ko?.minute ?? null,
-      minute65Stats: latestElapsedMinute !== null && latestElapsedMinute >= 65 ? checkpoint65?.value ?? null : null, minute65: latestElapsedMinute !== null && latestElapsedMinute >= 65 ? checkpoint65?.minute ?? null : null,
-      minute70Stats: latestElapsedMinute !== null && latestElapsedMinute >= 70 ? checkpoint70?.value ?? null : null, minute70: latestElapsedMinute !== null && latestElapsedMinute >= 70 ? checkpoint70?.minute ?? null : null,
-      minute75Stats: latestElapsedMinute !== null && latestElapsedMinute >= 75 ? checkpoint75?.value ?? null : null, minute75: latestElapsedMinute !== null && latestElapsedMinute >= 75 ? checkpoint75?.minute ?? null : null,
-      minute80Stats: latestElapsedMinute !== null && latestElapsedMinute >= 80 ? checkpoint80?.value ?? null : null, minute80: latestElapsedMinute !== null && latestElapsedMinute >= 80 ? checkpoint80?.minute ??null : null,
+      minute65Stats: latestElapsedMinute !== null && latestElapsedMinute >= 65 ? checkpoint65?.value ?? null : null, minute65: latestElapsedMinute !== null && latestElapsedMinute >= 65 ? checkpoint65?.minute ?? null : null, minute65Ready: latestElapsedMinute !== null && latestElapsedMinute >= 65,
+      minute70Stats: latestElapsedMinute !== null && latestElapsedMinute >= 70 ? checkpoint70?.value ?? null : null, minute70: latestElapsedMinute !== null && latestElapsedMinute >= 70 ? checkpoint70?.minute ?? null : null, minute70Ready: latestElapsedMinute !== null && latestElapsedMinute >= 70,
+      minute75Stats: latestElapsedMinute !== null && latestElapsedMinute >= 75 ? checkpoint75?.value ?? null : null, minute75: latestElapsedMinute !== null && latestElapsedMinute >= 75 ? checkpoint75?.minute ?? null : null, minute75Ready: latestElapsedMinute !== null && latestElapsedMinute >= 75,
+      minute80Stats: latestElapsedMinute !== null && latestElapsedMinute >= 80 ? checkpoint80?.value ?? null : null, minute80: latestElapsedMinute !== null && latestElapsedMinute >= 80 ? checkpoint80?.minute ?? null : null, minute80Ready: latestElapsedMinute !== null && latestElapsedMinute >= 80,
       historyFallback: true,
     };
   }
