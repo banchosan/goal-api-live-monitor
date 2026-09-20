@@ -3,7 +3,7 @@
 import './bookmarks.css';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { visibleCollectorFixtures, withoutFixture } from '@/lib/live-monitor-state';
+import { toggleAllLiveFixtureSelections, toggleLiveFixtureSelection, visibleCollectorFixtures, withoutFixture } from '@/lib/live-monitor-state';
 import { displayMatchMinute } from '@/lib/live-minute';
 import { readJsonResponse, responseFailureMessage } from '@/lib/safe-json-response';
 import { isGoalProviderPlaceholderZeroPair } from '@/lib/live-stat-availability';
@@ -60,6 +60,7 @@ export default function Home() {
   const [fixtures, setFixtures] = useState<Fixture[]>([]);
   const [upcomingFixtures, setUpcomingFixtures] = useState<UpcomingFixture[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
+  const [selectedLiveFixtureIds, setSelectedLiveFixtureIds] = useState<string[]>([]);
   const [matches, setMatches] = useState<Record<string, LiveMatch>>({});
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
@@ -125,6 +126,30 @@ export default function Home() {
       } catch { failed.push(`${bookmark.home} vs ${bookmark.away}`); }
     }
     await loadMonitorExclusions(); setMessage(`選択した${unique.length}試合をLIVE画面から外しました。Bookmarkは維持: 成功 ${saved} / 失敗 ${failed.length}${failed.length?`（${failed.slice(0,3).join(' / ')}${failed.length>3?' ほか':''}）`:''}`);
+  }
+  async function excludeSelectedLiveMatches(items: LiveMatch[]) {
+    const unique=[...new Map(items.map((item)=>[item.id,item])).values()].filter((item)=>!excludedFixtureIdsRef.current.has(item.id));
+    if (!unique.length) { setMessage('選択した試合はすでにLIVE画面から外れています。'); return; }
+    let saved=0; const failed:string[]=[]; const completedIds=new Set<string>();
+    for (const match of unique) {
+      try {
+        const exclusion=await fetch('/api/monitor-exclusions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fixtureId:match.id,home:match.home,away:match.away,reason:'bulk_live_card_monitor_exclusion'})});
+        if (!exclusion.ok) throw new Error('監視除外の保存に失敗しました');
+        excludedFixtureIdsRef.current.add(match.id); hiddenFixtureIdsRef.current.add(match.id);
+        if (!match.ended) {
+          const response=await fetch('/api/collector',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'remove',fixtureId:match.id,reason:'bulk_live_card_monitor_exclusion'})});
+          if (!response.ok) throw new Error('Collectorから外せませんでした');
+        }
+        completedIds.add(match.id); saved += 1;
+      } catch { failed.push(`${match.home} vs ${match.away}`); }
+    }
+    await loadMonitorExclusions();
+    if (completedIds.size) {
+      setMatches((now)=>Object.fromEntries(Object.entries(now).filter(([fixtureId])=>!completedIds.has(fixtureId))));
+      setSelectedLiveFixtureIds((now)=>now.filter((fixtureId)=>!completedIds.has(fixtureId)));
+      setSelected((now)=>now.filter((fixtureId)=>!completedIds.has(fixtureId)));
+    }
+    setMessage(`選択した${unique.length}試合をLIVE画面から外しました。Bookmarkと過去データは維持: 成功 ${saved} / 失敗 ${failed.length}${failed.length?`（${failed.slice(0,3).join(' / ')}${failed.length>3?' ほか':''}）`:''}`);
   }
   async function restoreMonitoring(fixtureId:string){const response=await fetch(`/api/monitor-exclusions?fixtureId=${encodeURIComponent(fixtureId)}`,{method:'DELETE'});if(response.ok){excludedFixtureIdsRef.current.delete(fixtureId);hiddenFixtureIdsRef.current.delete(fixtureId);await loadMonitorExclusions();setMessage('監視除外を解除しました。Bookmark済みならschedulerが再び監視へ追加します。');}}
   async function applySavedAutoBookmarks() {
@@ -219,6 +244,7 @@ export default function Home() {
       hiddenFixtureIdsRef.current.add(id);
       setMatches((now) => withoutFixture(now, id));
       setSelected((now) => now.filter((fixtureId) => fixtureId !== id));
+      setSelectedLiveFixtureIds((now) => now.filter((fixtureId) => fixtureId !== id));
       setMessage('対象試合を永続的な監視除外リストへ移しました。Bookmarkと過去データは保持されています。');
     } catch (error) { setMessage(error instanceof Error ? error.message : '個別解除に失敗しました'); }
   }
@@ -231,6 +257,7 @@ export default function Home() {
     hiddenFixtureIdsRef.current.add(id);
     setMatches((now) => withoutFixture(now, id));
     setSelected((now) => now.filter((fixtureId) => fixtureId !== id));
+    setSelectedLiveFixtureIds((now) => now.filter((fixtureId) => fixtureId !== id));
     setMessage('終了試合を画面から外しました。raw/D1/timelineの履歴は保持されています。');
   }
 
@@ -260,6 +287,10 @@ export default function Home() {
     });
   }
   useEffect(() => { matchesRef.current = matches; }, [matches]);
+  useEffect(() => { setSelectedLiveFixtureIds((now) => {
+    const visibleIds=new Set(Object.keys(matches)); const next=now.filter((fixtureId)=>visibleIds.has(fixtureId));
+    return next.length === now.length ? now : next;
+  }); }, [matches]);
   useEffect(() => {
     const fixtureIds = Object.keys(matches).sort(); if (!fixtureIds.length) return;
     let cancelled = false;
@@ -329,7 +360,8 @@ export default function Home() {
         </div>
       </aside>
       <section className="score-stage">{!Object.keys(matches).length && <div className="hero-empty"><div className="pulse-rings"><span /><span /><b>⚽</b></div><h2>試合を選択してください</h2><p>左のライブ一覧から最大25試合を選び、1本のSocketで同時監視できます。</p><div className="flow"><span>LIVE LIST<small>通常2 REST</small></span><i>→</i><span>SELECT<small>最大25試合</small></span><i>→</i><span>WEBSOCKET<small>更新消費 0</small></span></div></div>}
-        <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} form={liveForms[m.id] ?? null} signals={liveSignals[m.id]??[]} onCapture={() => captureSnapshot(m.id)} onSelectSnapshot={(snapshotId) => selectSnapshot(m.id, snapshotId)} onRemove={() => m.ended ? void hideFinishedFixture(m.id) : void removeFromMonitoring(m.id)} onRefresh={() => void refreshSubscription(m.id)} />)}</div>
+        {Object.keys(matches).length > 0 && <div className="bulk-actions live-card-bulk-actions"><label><input aria-label="表示中のLIVE試合をすべて選択" type="checkbox" checked={selectedLiveFixtureIds.length === Object.keys(matches).length} onChange={() => setSelectedLiveFixtureIds((now)=>toggleAllLiveFixtureSelections(now,Object.keys(matches)))} />表示中の全{Object.keys(matches).length}試合を選択</label><small>{selectedLiveFixtureIds.length}試合選択中</small><button className="danger" disabled={!selectedLiveFixtureIds.length} onClick={() => void excludeSelectedLiveMatches(Object.values(matches).filter((match)=>selectedLiveFixtureIds.includes(match.id)))}>選択した{selectedLiveFixtureIds.length}試合を監視対象外へ</button></div>}
+        <div className="cards-grid">{Object.values(matches).map((m) => <MatchCard key={m.id} match={m} form={liveForms[m.id] ?? null} signals={liveSignals[m.id]??[]} selectedForBulkExclusion={selectedLiveFixtureIds.includes(m.id)} onToggleBulkSelection={() => setSelectedLiveFixtureIds((now)=>toggleLiveFixtureSelection(now,m.id))} onCapture={() => captureSnapshot(m.id)} onSelectSnapshot={(snapshotId) => selectSnapshot(m.id, snapshotId)} onRemove={() => m.ended ? void hideFinishedFixture(m.id) : void removeFromMonitoring(m.id)} onRefresh={() => void refreshSubscription(m.id)} />)}</div>
       </section>
     </div> : viewMode === 'upcoming' ? <UpcomingBoard fixtures={upcomingFixtures} loading={upcomingLoading} onRest={(count) => setRestCount((value) => value + count)} bookmarks={bookmarks} onBookmark={bookmarkFixture} onBulkBookmark={bookmarkFixtures} /> : <ManagementBoard bookmarks={bookmarks} exclusions={monitorExclusions} matches={matches} message={bookmarkMessage} onRemove={removeBookmark} onRestoreMonitoring={restoreMonitoring} onBulkExclude={excludeBookmarksFromMonitoring} onApplySavedAuto={applySavedAutoBookmarks} applyingSavedAuto={applyingSavedAuto} />}
   </main>;
@@ -524,7 +556,7 @@ function isSelectedLeague(fixture: UpcomingFixture) {
 
 function normalize(value: string) { return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase(); }
 
-function MatchCard({ match, form, signals, onCapture, onSelectSnapshot, onRemove, onRefresh }: { match: LiveMatch; form: SavedForm | null; signals: LiveSignal[]; onCapture: () => void; onSelectSnapshot: (id: string) => void; onRemove: () => void; onRefresh: () => void }) {
+function MatchCard({ match, form, signals, selectedForBulkExclusion, onToggleBulkSelection, onCapture, onSelectSnapshot, onRemove, onRefresh }: { match: LiveMatch; form: SavedForm | null; signals: LiveSignal[]; selectedForBulkExclusion: boolean; onToggleBulkSelection: () => void; onCapture: () => void; onSelectSnapshot: (id: string) => void; onRemove: () => void; onRefresh: () => void }) {
   const status = displayMatchMinute(match.status);
   const selectedSnapshot = match.snapshots.find((snapshot) => snapshot.id === match.selectedSnapshotId);
   const lastReceivedMs = Date.parse(match.lastReceivedAt ?? '');
@@ -533,7 +565,7 @@ function MatchCard({ match, form, signals, onCapture, onSelectSnapshot, onRemove
   const subscribedMs = Date.parse(match.subscribedAt ?? '');
   const providerSilent = match.subscriptionState === 'provider_silent';
   const initialResubscribeAttempts = match.initialUpdateResubscribeAttempts ?? 0;
-  return <article className="score-card"><div className="league-line"><span>{match.country} · {match.league}</span><span className="fixture-controls"><b>{status}</b>{!match.ended && <button className="refresh-fixture" onClick={onRefresh}>再subscribe</button>}<button onClick={onRemove}>{match.ended ? '一覧から外す' : '監視から外す'}</button></span></div><div className="scoreline"><div><span className="crest home">{match.home.slice(0, 2).toUpperCase()}</span><div className="team-name-form"><strong>{match.home}</strong><FormStrip results={form?.home ?? null} /></div></div><p><b>{match.homeScore}</b><i>–</i><b>{match.awayScore}</b></p><div><span className="crest away">{match.away.slice(0, 2).toUpperCase()}</span><div className="team-name-form"><strong>{match.away}</strong><FormStrip results={form?.away ?? null} /></div></div></div><div className={`update-line ${stale ? 'stale' : ''}`}><span className="live-pill">● {match.historyFallback ? 'SAVED HISTORY' : match.ended ? 'FINISHED' : stale ? 'UPDATE STALE' : waitingForProvider ? 'SUBSCRIBED' : 'LIVE'}</span><span>{match.historyFallback ? `保存済みSocket履歴 · #${match.updates}` : match.updatedAt ? `Socket更新 ${match.updatedAt} JST · #${match.updates}${stale ? ' · provider更新停止を検知' : ''}` : waitingForProvider ? 'subscribe成功・最初のSocket更新（分数・stats）待ち' : 'subscribe応答待ち'}</span></div>
+  return <article className="score-card"><div className="league-line"><span>{match.country} · {match.league}</span><span className="fixture-controls"><label className="live-card-select"><input aria-label={`${match.home} vs ${match.away}を一括監視除外用に選択`} type="checkbox" checked={selectedForBulkExclusion} onChange={onToggleBulkSelection} />選択</label><b>{status}</b>{!match.ended && <button className="refresh-fixture" onClick={onRefresh}>再subscribe</button>}<button onClick={onRemove}>{match.ended ? '一覧から外す' : '監視から外す'}</button></span></div><div className="scoreline"><div><span className="crest home">{match.home.slice(0, 2).toUpperCase()}</span><div className="team-name-form"><strong>{match.home}</strong><FormStrip results={form?.home ?? null} /></div></div><p><b>{match.homeScore}</b><i>–</i><b>{match.awayScore}</b></p><div><span className="crest away">{match.away.slice(0, 2).toUpperCase()}</span><div className="team-name-form"><strong>{match.away}</strong><FormStrip results={form?.away ?? null} /></div></div></div><div className={`update-line ${stale ? 'stale' : ''}`}><span className="live-pill">● {match.historyFallback ? 'SAVED HISTORY' : match.ended ? 'FINISHED' : stale ? 'UPDATE STALE' : waitingForProvider ? 'SUBSCRIBED' : 'LIVE'}</span><span>{match.historyFallback ? `保存済みSocket履歴 · #${match.updates}` : match.updatedAt ? `Socket更新 ${match.updatedAt} JST · #${match.updates}${stale ? ' · provider更新停止を検知' : ''}` : waitingForProvider ? 'subscribe成功・最初のSocket更新（分数・stats）待ち' : 'subscribe応答待ち'}</span></div>
     <DangerousAttacksSignalPanel match={match} signals={signals} />
     <LateMatchComparisonPanel match={match} />
     <details className="snapshot-panel"><summary>SNAPSHOTS <small>手動スナップ</small></summary><div className="snapshot-actions"><button onClick={onCapture} disabled={!match.stats.length}>現在値をスナップ（REST 0）</button><span>{match.snapshots.length ? `${match.snapshots.length}件保存` : '好きな時点を保存できます'}</span></div>{match.snapshots.length > 0 && <div className="snapshot-tabs">{match.snapshots.map((snapshot) => <button className={snapshot.id === match.selectedSnapshotId ? 'active' : ''} onClick={() => onSelectSnapshot(snapshot.id)} key={snapshot.id}>{formatSnapshotStatus(snapshot.status)} <small>{snapshot.capturedAt}</small></button>)}</div>}</details>
