@@ -94,13 +94,13 @@ LIVEカードには、必要な区間だけ開ける折りたたみ式の比較�
 
 GOAL providerが試合中に一時的な`NOT_STARTED` / `match_live=0` / minute空のframeを送ることがあります。このframeはRAWとして残しますが、`match_live=0`単独ではfinished扱いにせずunsubscribeしません。明示的なterminal statusだけで終了させます。
 
-WebSocketはheartbeat、再認証、再subscribe、指数backoffを持ちます。ただしproviderが更新を送らない時間やネットワーク断は完全には防げません。Dashboardのdata gap・LIVE履歴で確認してください。
+WebSocketはheartbeat、再認証、再subscribe、指数backoffを持ちます。Schedulerがkickoff前にsubscribeする場合は、試合開始後の通常更新猶予を過ぎるまで「初回更新なし」の再subscribeを行いません。ただしproviderが送る1001/1006 closeや更新未配信そのものは完全には防げません。Dashboardのdata gap・LIVE履歴で確認してください。
 
 ## Bookmark Scheduler
 
 - BookmarkはD1へ永続化される。
 - kickoff約3分前に既存SchedulerがCollectorへ渡す。
-- 1本のWebSocket connection上で最大25 fixtureをsubscribeする。
+- 1本のWebSocket connection上で最大20 fixtureをsubscribeする（5枠の安全余白）。
 - 超過分はkickoff順にqueueする。
 - restart recovery、FT unsubscribe、manual / AUTO_FORM共存を持つ。
 - 同じfixtureをMANUALとAUTO_FORMで二重subscribeしない。
@@ -149,6 +149,8 @@ Core identityはprovider固有IDを根拠にします。
 - `core_fixtures`: home / away core team、kickoff、leagueを持つ
 
 GOAL provider内のfixtureは、fixture ID・home/away team ID・kickoff・league IDが揃うときだけ作成します。既存GOAL mappingがあれば、その`core_team`を必ず再利用します。name-only mergeは禁止です。
+
+LIVE一覧から手動Bookmarkする場合も、GOALが返したleague/team IDをCollector状態まで保持してidentity writerへ渡します。LIVE payloadに正式IDがない場合は、従来どおりRAW-onlyで保存し、名前から補完しません。
 
 GOALとAPI-Footballのcross-provider統合は別処理です。fixture identity bridgeが複数evidenceで`SAFE`と判定した場合だけ行い、通常のGOAL identity作成が勝手にAPI-Football mappingを足すことはありません。
 

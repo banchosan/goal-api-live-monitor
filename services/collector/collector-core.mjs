@@ -9,7 +9,10 @@ const TOKEN_TIMEOUT_MS = 12_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const STABLE_CONNECTION_MS = 120_000;
 const DATA_GAP_THRESHOLD_MS = 120_000;
-const INITIAL_UPDATE_TIMEOUT_MS = 15_000;
+// The scheduler deliberately subscribes before kickoff.  A normal provider
+// stream may have no match_update until the game begins, so 15 seconds was a
+// false-positive timeout that created needless unsubscribe/resubscribe churn.
+const INITIAL_UPDATE_TIMEOUT_MS = 75_000;
 const MAX_INITIAL_UPDATE_RESUBSCRIBES = 2;
 
 export class GoalApiCollector {
@@ -235,12 +238,24 @@ export class GoalApiCollector {
   armInitialUpdateTimer(fixture) {
     this.clearInitialUpdateTimer(fixture);
     if (fixture.updates || !this.initialUpdateTimeoutMs || this.initialUpdateTimeoutMs < 1) return;
+    const subscribedAtMs = Date.parse(fixture.subscribedAt ?? this.now());
+    const nowMs = Date.parse(this.now());
+    const kickoffMs = Date.parse(fixture.kickoffUtc ?? '');
+    // Do not classify a pre-kickoff subscription as provider-silent.  Recovery
+    // begins only after kickoff plus a full normal-update grace period.
+    const recoveryBaseMs = Number.isFinite(kickoffMs) && Number.isFinite(subscribedAtMs) && kickoffMs > subscribedAtMs
+      ? kickoffMs
+      : subscribedAtMs;
+    const deadlineMs = Number.isFinite(recoveryBaseMs)
+      ? recoveryBaseMs + this.initialUpdateTimeoutMs
+      : (Number.isFinite(nowMs) ? nowMs : Date.now()) + this.initialUpdateTimeoutMs;
+    const delayMs = Math.max(1, deadlineMs - (Number.isFinite(nowMs) ? nowMs : Date.now()));
     const timer = this.schedule(() => {
       this.initialUpdateTimers.delete(fixture.id);
       void this.retryInitialSubscription(fixture.id);
-    }, this.initialUpdateTimeoutMs);
+    }, delayMs);
     this.initialUpdateTimers.set(fixture.id, timer);
-    fixture.initialUpdateDeadlineAt = new Date(Date.parse(fixture.subscribedAt ?? this.now()) + this.initialUpdateTimeoutMs).toISOString();
+    fixture.initialUpdateDeadlineAt = new Date(deadlineMs).toISOString();
   }
 
   clearInitialUpdateTimer(fixture) {
@@ -333,7 +348,8 @@ function closeCategory(reason) {
 }
 
 function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, lastGapReportedAt: null, ended: false, htStats: null, daCutoffStats: null, daCutoffMinute: null, koCutoffStats: null, koCutoffMinute: null, minute65Stats: null, minute65: null, minute65Ready: false, minute70Stats: null, minute70: null, minute70Ready: false, minute75Stats: null, minute75: null, minute75Ready: false, minute80Stats: null, minute80: null, minute80Ready: false, subscriptionState: 'not_subscribed', subscribeRequestedAt: null, subscribedAt: null, initialUpdateDeadlineAt: null, initialUpdateResubscribeAttempts: 0, lastRefreshAt: null }; }
-function normalizeFixtures(fixtures) { return Array.isArray(fixtures) ? fixtures.filter((fixture) => fixture?.id).map((fixture) => ({ id: String(fixture.id), league: String(fixture.league ?? ''), country: String(fixture.country ?? ''), home: String(fixture.home ?? 'Home'), away: String(fixture.away ?? 'Away'), homeScore: String(fixture.homeScore ?? '-'), awayScore: String(fixture.awayScore ?? '-'), status: String(fixture.status ?? 'LIVE'), kickoffUtc: fixture.kickoffUtc ? String(fixture.kickoffUtc) : null, monitorSource: String(fixture.monitorSource ?? 'manual') })) : []; }
+function normalizeFixtures(fixtures) { return Array.isArray(fixtures) ? fixtures.filter((fixture) => fixture?.id).map((fixture) => ({ id: String(fixture.id), league: String(fixture.league ?? ''), country: String(fixture.country ?? ''), home: String(fixture.home ?? 'Home'), away: String(fixture.away ?? 'Away'), homeScore: String(fixture.homeScore ?? '-'), awayScore: String(fixture.awayScore ?? '-'), status: String(fixture.status ?? 'LIVE'), kickoffUtc: fixture.kickoffUtc ? String(fixture.kickoffUtc) : null, // Preserve official GOAL IDs for a later manual Bookmark; never infer them from names.
+  leagueId: fixture.leagueId ? String(fixture.leagueId) : null, homeTeamId: fixture.homeTeamId ? String(fixture.homeTeamId) : null, awayTeamId: fixture.awayTeamId ? String(fixture.awayTeamId) : null, monitorSource: String(fixture.monitorSource ?? 'manual') })) : []; }
 
 export function mergeStatistics(previous, incoming) {
   const merged = structuredClone(Array.isArray(previous) ? previous : []);

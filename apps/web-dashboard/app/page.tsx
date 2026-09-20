@@ -12,7 +12,7 @@ import { MAX_FORM_ANALYSIS_TEAMS } from '@/lib/form-analysis-batching';
 import { formQualifiedFixtureIds, qualifiedUnbookmarkedFixtures } from '@/lib/form-bookmark-selection';
 import { groupFormCandidates } from '@/lib/form-history-grouping';
 
-type Fixture = { id: string; league: string; country: string; home: string; away: string; homeScore: string; awayScore: string; status: string; kickoffUtc?: string };
+type Fixture = { id: string; league: string; country: string; home: string; away: string; homeScore: string; awayScore: string; status: string; kickoffUtc?: string; leagueId?: string | null; homeTeamId?: string | null; awayTeamId?: string | null };
 type UpcomingFixture = { id: string; league: string; leagueId?: string; country: string; home: string; away: string; homeTeamId: string; awayTeamId: string; kickoffUtc: string; kickoffJst: string; status: string };
 type FormCandidate = { kickoffUtc: string; kickoffJst: string; league: string; country: string; fixtureId: string; home:string; away:string; homeTeamId:string; awayTeamId:string; teamId:string; team: string; side: 'home' | 'away'; opponent: string; wins: number; draws: number; last5: { result: string; score: string; opponent: string; fixtureId: string }[] };
 type Stat = { type: string; home: string | number | null; away: string | number | null };
