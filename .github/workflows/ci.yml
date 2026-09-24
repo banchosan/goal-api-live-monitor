@@ -1,0 +1,37 @@
+name: Test and Build
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    name: Node test and production build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web-dashboard
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.0'
+          cache: npm
+          cache-dependency-path: apps/web-dashboard/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run deterministic tests
+        run: npm test
+
+      - name: Build production bundle
+        run: npm run build
