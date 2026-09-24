@@ -20,10 +20,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Use Node.js 22
+      - name: Use verified Node.js runtime
         uses: actions/setup-node@v4
         with:
-          node-version: '22.13.0'
+          # `AbortSignal.timeout()` coverage is deterministic on the same
+          # runtime verified locally for this repository.
+          node-version: '26.8.1'
           cache: npm
           cache-dependency-path: apps/web-dashboard/package-lock.json
 
