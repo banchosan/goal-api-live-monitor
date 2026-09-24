@@ -17,7 +17,9 @@ type UpcomingFixture = { id: string; league: string; leagueId?: string; country:
 type FormCandidate = { kickoffUtc: string; kickoffJst: string; league: string; country: string; fixtureId: string; home:string; away:string; homeTeamId:string; awayTeamId:string; teamId:string; team: string; side: 'home' | 'away'; opponent: string; wins: number; draws: number; last5: { result: string; score: string; opponent: string; fixtureId: string }[] };
 type Stat = { type: string; home: string | number | null; away: string | number | null };
 type ManualSnapshot = { id: string; status: string; capturedAt: string; stats: Stat[] };
-type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; lastReceivedAt?: string; updates: number; ended?: boolean; htStats?: Stat[] | null; daCutoffStats?: Stat[] | null; daCutoffMinute?: number | null; koCutoffStats?: Stat[] | null; koCutoffMinute?: number | null; minute65Stats?: Stat[] | null; minute65?: number | null; minute65Ready?: boolean; minute70Stats?: Stat[] | null; minute70?: number | null; minute70Ready?: boolean; minute75Stats?: Stat[] | null; minute75?: number | null; minute75Ready?: boolean; minute80Stats?: Stat[] | null; minute80?: number | null; minute80Ready?: boolean; historyFallback?: boolean; subscriptionState?: string; subscribedAt?: string | null; initialUpdateResubscribeAttempts?: number; snapshots: ManualSnapshot[]; selectedSnapshotId?: string };
+type RollingMomentumSide = { state?: 'waiting' | 'active' | 'cooling' | 'faded' | 'quality_check'; firstFiredAtMinute?: number | null; startMinute?: number; endMinute?: number; rule?: 'rapid_10m' | 'sustained_15m'; attackDelta?: number | null; opponentAttackDelta?: number | null; daDelta?: number | null; opponentDaDelta?: number | null; pressureDiff?: number | null; firstFiveDa?: number | null; lastFiveDa?: number | null; recentFiveDa?: number | null; reason?: string };
+type RollingMomentum = { phase?: 'first_half' | 'second_half'; currentMinute?: number | null; HOME?: RollingMomentumSide; AWAY?: RollingMomentumSide };
+type LiveMatch = Fixture & { stats: Stat[]; updatedAt?: string; lastReceivedAt?: string; updates: number; ended?: boolean; htStats?: Stat[] | null; daCutoffStats?: Stat[] | null; daCutoffMinute?: number | null; koCutoffStats?: Stat[] | null; koCutoffMinute?: number | null; rollingMomentum?: RollingMomentum | null; historyFallback?: boolean; subscriptionState?: string; subscribedAt?: string | null; initialUpdateResubscribeAttempts?: number; snapshots: ManualSnapshot[]; selectedSnapshotId?: string };
 type LiveSignal = { id:string; fixtureId:string; ruleId:string; ruleVersion:string; signalSide:string|null; triggeredAt:string; detectedMinute:number|null; feature?:Record<string,unknown>|null };
 type SavedForm = { runId:string; createdAt:string; home: FormResult[] | null; away: FormResult[] | null };
 type FormResult = { result:string; score:string; opponent:string; fixtureId:string };
@@ -31,28 +33,7 @@ function checkpointFallback(match: LiveMatch, history: Partial<LiveMatch>): Live
   // and statistics. Persisted history only fills the four display checkpoints
   // that an already-running older Collector cannot expose in its memory.
   if (!match.stats.length) return { ...match, ...history, snapshots: match.snapshots, selectedSnapshotId: match.selectedSnapshotId } as LiveMatch;
-  // A history response deliberately includes null for a target that has not
-  // happened yet. Prefer that explicit null over an old Collector's early
-  // in-memory candidate (for example, 46' being incorrectly shown as 70').
-  const hasHistory = (key: keyof LiveMatch) => Object.prototype.hasOwnProperty.call(history, key);
-  const checkpoint = (statsKey: keyof LiveMatch, minuteKey: keyof LiveMatch, currentStats: Stat[] | null, currentMinute: number | null): [Stat[] | null, number | null] => hasHistory(statsKey)
-    ? [history[statsKey] as Stat[] | null, history[minuteKey] as number | null]
-    : [currentStats, currentMinute];
-  const [minute65Stats, minute65] = checkpoint('minute65Stats', 'minute65', match.minute65Stats ?? null, match.minute65 ?? null);
-  const [minute70Stats, minute70] = checkpoint('minute70Stats', 'minute70', match.minute70Stats ?? null, match.minute70 ?? null);
-  const [minute75Stats, minute75] = checkpoint('minute75Stats', 'minute75', match.minute75Stats ?? null, match.minute75 ?? null);
-  const [minute80Stats, minute80] = checkpoint('minute80Stats', 'minute80', match.minute80Stats ?? null, match.minute80 ?? null);
-  return {
-    ...match,
-    minute65Stats, minute65,
-    minute70Stats, minute70,
-    minute75Stats, minute75,
-    minute80Stats, minute80,
-    minute65Ready: hasHistory('minute65Ready') ? Boolean(history.minute65Ready) : Boolean(match.minute65Ready),
-    minute70Ready: hasHistory('minute70Ready') ? Boolean(history.minute70Ready) : Boolean(match.minute70Ready),
-    minute75Ready: hasHistory('minute75Ready') ? Boolean(history.minute75Ready) : Boolean(match.minute75Ready),
-    minute80Ready: hasHistory('minute80Ready') ? Boolean(history.minute80Ready) : Boolean(match.minute80Ready),
-  };
+  return match;
 }
 
 export default function Home() {
@@ -566,8 +547,8 @@ function MatchCard({ match, form, signals, selectedForBulkExclusion, onToggleBul
   const providerSilent = match.subscriptionState === 'provider_silent';
   const initialResubscribeAttempts = match.initialUpdateResubscribeAttempts ?? 0;
   return <article className="score-card"><div className="league-line"><span>{match.country} · {match.league}</span><span className="fixture-controls"><label className="live-card-select"><input aria-label={`${match.home} vs ${match.away}を一括監視除外用に選択`} type="checkbox" checked={selectedForBulkExclusion} onChange={onToggleBulkSelection} />選択</label><b>{status}</b>{!match.ended && <button className="refresh-fixture" onClick={onRefresh}>再subscribe</button>}<button onClick={onRemove}>{match.ended ? '一覧から外す' : '監視から外す'}</button></span></div><div className="scoreline"><div><span className="crest home">{match.home.slice(0, 2).toUpperCase()}</span><div className="team-name-form"><strong>{match.home}</strong><FormStrip results={form?.home ?? null} /></div></div><p><b>{match.homeScore}</b><i>–</i><b>{match.awayScore}</b></p><div><span className="crest away">{match.away.slice(0, 2).toUpperCase()}</span><div className="team-name-form"><strong>{match.away}</strong><FormStrip results={form?.away ?? null} /></div></div></div><div className={`update-line ${stale ? 'stale' : ''}`}><span className="live-pill">● {match.historyFallback ? 'SAVED HISTORY' : match.ended ? 'FINISHED' : stale ? 'UPDATE STALE' : waitingForProvider ? 'SUBSCRIBED' : 'LIVE'}</span><span>{match.historyFallback ? `保存済みSocket履歴 · #${match.updates}` : match.updatedAt ? `Socket更新 ${match.updatedAt} JST · #${match.updates}${stale ? ' · provider更新停止を検知' : ''}` : waitingForProvider ? 'subscribe成功・最初のSocket更新（分数・stats）待ち' : 'subscribe応答待ち'}</span></div>
+    <RollingMomentumPanel match={match} signals={signals} />
     <DangerousAttacksSignalPanel match={match} signals={signals} />
-    <LateMatchComparisonPanel match={match} />
     <details className="snapshot-panel"><summary>SNAPSHOTS <small>手動スナップ</small></summary><div className="snapshot-actions"><button onClick={onCapture} disabled={!match.stats.length}>現在値をスナップ（REST 0）</button><span>{match.snapshots.length ? `${match.snapshots.length}件保存` : '好きな時点を保存できます'}</span></div>{match.snapshots.length > 0 && <div className="snapshot-tabs">{match.snapshots.map((snapshot) => <button className={snapshot.id === match.selectedSnapshotId ? 'active' : ''} onClick={() => onSelectSnapshot(snapshot.id)} key={snapshot.id}>{formatSnapshotStatus(snapshot.status)} <small>{snapshot.capturedAt}</small></button>)}</div>}</details>
     {selectedSnapshot && <SnapshotDeltaPanel match={match} snapshot={selectedSnapshot} />}
     {match.stats.length ? <div className="stats"><div className="stat-head"><span>HOME</span><b>CURRENT STATISTICS</b><span>AWAY</span></div>{canonicalGoalLiveDisplayStats(match.stats).map((s, i) => { const unavailable = isGoalProviderPlaceholderZeroPair(s.type, s.home, s.away, match.status); return <div className="stat-row" key={`${s.type}-${i}`}><strong>{unavailable ? '—' : s.home ?? 'N/A'}</strong><span>{s.type}{unavailable ? '（GOAL API未提供）' : ''}</span><strong>{unavailable ? '—' : s.away ?? 'N/A'}</strong></div>; })}{hasGoalLiveStatisticConflict(match.stats) && <small className="stat-source-warning">⚠ GOAL Socket内で同義統計の値が競合しています。RAWは保存済みですが、このfixtureの統計比較は参考値です。</small>}</div> : providerSilent ? <div className="waiting"><p>最初の更新が届かないため、自動再subscribeを{initialResubscribeAttempts}回試しました。GOAL APIの購読ストリームが無応答です。</p></div> : <div className="waiting"><span /><p>{initialResubscribeAttempts ? `最初の更新待ち（自動再subscribe ${initialResubscribeAttempts}/2）` : 'WebSocketの最初のmatch_updateを待っています'}</p></div>}
@@ -579,17 +560,21 @@ function FormStrip({ results }: { results: FormResult[] | null }) {
   return <span className="live-form-strip" title="保存済みの直近5試合（左が古い試合）">{results.map((item, index) => <i key={`${item.fixtureId}-${index}`} className={item.result.toLowerCase()}>{item.result}</i>)}</span>;
 }
 
-function LateMatchComparisonPanel({ match }: { match: LiveMatch }) {
-  return <><LateIntervalPanel label="65' → 70'" startLabel="65'" endLabel="70'" startMinute={match.minute65 ?? null} endMinute={match.minute70 ?? null} startReady={match.minute65Ready ?? false} endReady={match.minute70Ready ?? false} startStats={match.minute65Stats ?? null} endStats={match.minute70Stats ?? null} /><LateIntervalPanel label="70' → 75'" startLabel="70'" endLabel="75'" startMinute={match.minute70 ?? null} endMinute={match.minute75 ?? null} startReady={match.minute70Ready ?? false} endReady={match.minute75Ready ?? false} startStats={match.minute70Stats ?? null} endStats={match.minute75Stats ?? null} /><LateIntervalPanel label="75' → 80'" startLabel="75'" endLabel="80'" startMinute={match.minute75 ?? null} endMinute={match.minute80 ?? null} startReady={match.minute75Ready ?? false} endReady={match.minute80Ready ?? false} startStats={match.minute75Stats ?? null} endStats={match.minute80Stats ?? null} /></>;
-}
-
-function LateIntervalPanel({ label, startLabel, endLabel, startMinute, endMinute, startReady, endReady, startStats, endStats }: { label: string; startLabel: string; endLabel: string; startMinute: number | null; endMinute: number | null; startReady: boolean; endReady: boolean; startStats: Stat[] | null; endStats: Stat[] | null }) {
-  const interval = { label, startLabel, endLabel, startMinute, endMinute, startReady, endReady, startStats, endStats };
-  const ready = interval.startReady && interval.endReady && Boolean(interval.startStats?.length && interval.endStats?.length);
-  const rows = ['Dangerous Attacks', 'On Target', 'Off Target', 'Corners'].map((type) => ({ type, home: statValue(interval.endStats ?? [], type, 'home'), away: statValue(interval.endStats ?? [], type, 'away'), baseHome: statValue(interval.startStats ?? [], type, 'home'), baseAway: statValue(interval.startStats ?? [], type, 'away') }));
-  // Keep the late panels open by default, just like HT → 65. They remain
-  // foldable, but a waiting checkpoint must never be hidden behind a summary.
-  return <details className="snapshot-delta da-signal-panel interval-comparison-panel" open><summary><b>{label} STAT SNAPSHOT</b><span>{ready ? 'DA / On・Off Target / Corner' : `${interval.startLabel} → ${interval.endLabel} checkpoint待ち`}</span></summary><div className="stat-head"><span>HOME</span><b>{ready ? `${interval.startMinute}' → ${interval.endMinute}'` : `${interval.startLabel} → ${interval.endLabel} checkpoint待ち`}</b><span>AWAY</span></div>{ready ? <>{rows.map((row) => <SignalStatRow key={row.type} label={`${row.type}（${interval.label}）`} home={row.home} away={row.away} baseHome={row.baseHome} baseAway={row.baseAway} />)}<small>Status: {interval.startMinute}' / {interval.endMinute}' の実際のSocket checkpoint比較（括弧内は開始時点からの増減）</small></> : <p className="no-delta">{interval.startLabel} と {interval.endLabel} の両方のcheckpointを待っています。</p>}</details>;
+function RollingMomentumPanel({ match, signals }: { match: LiveMatch; signals: LiveSignal[] }) {
+  const momentum = match.rollingMomentum;
+  const persisted = (side: 'HOME' | 'AWAY') => signals.find((signal) => signal.ruleId === 'rolling_attack_da_pressure' && signal.ruleVersion === 'v2' && signal.signalSide === `${momentum?.phase ?? 'second_half'}:${side}`);
+  const side = (key: 'HOME' | 'AWAY') => {
+    const value = momentum?.[key]; const saved = persisted(key);
+    const firedAt = value?.firstFiredAtMinute ?? saved?.detectedMinute ?? null;
+    const state = value?.state ?? 'waiting';
+    const title = state === 'active' ? '🔥 継続圧力' : state === 'faded' ? '⚠ 勢い低下' : state === 'cooling' ? '◌ 発火後・減速' : state === 'quality_check' ? '⚠ 統計品質確認' : '待機';
+    return { value, firedAt, state, title };
+  };
+  const home = side('HOME'); const away = side('AWAY');
+  const phaseLabel = !momentum ? 'Socket履歴待機' : momentum.phase === 'first_half' ? '前半' : '後半';
+  const detail = (value: RollingMomentumSide | undefined) => value?.startMinute === undefined || value?.endMinute === undefined ? `${phaseLabel}のSocket履歴を待機` : `${value.startMinute}' → ${value.endMinute}'`;
+  const active = home.state === 'active' || away.state === 'active';
+  return <details className={`snapshot-delta da-signal-panel rolling-momentum-panel${active ? ' pressure-active' : ''}`} open><summary><b>LIVE CONTINUOUS PRESSURE</b><span>{phaseLabel} · Attack + DA / 常に最新のSocketで再評価</span></summary><div className="stat-head"><span className={home.state}>{home.title}</span><b>{detail(home.value)}</b><span className={away.state}>{away.title}</span></div><SignalStatRow label="Attack 増加" home={home.value?.attackDelta ?? null} away={away.value?.attackDelta ?? null} homeHot={home.state === 'active'} awayHot={away.state === 'active'} /><SignalStatRow label="相手Attack増加" home={home.value?.opponentAttackDelta ?? null} away={away.value?.opponentAttackDelta ?? null} /><SignalStatRow label="DA 増加" home={home.value?.daDelta ?? null} away={away.value?.daDelta ?? null} homeHot={home.state === 'active'} awayHot={away.state === 'active'} /><SignalStatRow label="相手DA増加" home={home.value?.opponentDaDelta ?? null} away={away.value?.opponentDaDelta ?? null} /><SignalStatRow label="Pressure差（DA）" home={home.value?.pressureDiff ?? null} away={away.value?.pressureDiff ?? null} /><SignalStatRow label="直近5分 DA" home={home.value?.recentFiveDa ?? null} away={away.value?.recentFiveDa ?? null} /><div className="stat-row delta-row"><strong className={home.firedAt !== null ? 'signal-fired' : ''}>{home.firedAt === null ? '—' : `🔥 ${home.firedAt}'`}</strong><span>初回発火時刻（以後も勢いを再評価）</span><strong className={away.firedAt !== null ? 'signal-fired' : ''}>{away.firedAt === null ? '—' : `🔥 ${away.firedAt}'`}</strong></div><small>Status: HOME {home.title} / AWAY {away.title}{momentum?.currentMinute ? ` · ${momentum.currentMinute}' 時点の観測` : ''}</small></details>;
 }
 
 function DangerousAttacksSignalPanel({ match, signals }: { match: LiveMatch; signals: LiveSignal[] }) {

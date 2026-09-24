@@ -2,6 +2,7 @@ import { env } from 'cloudflare:workers';
 import { ensureMonitorSchema } from '@/db/monitor';
 import { normalizeGoalLiveSnapshot } from '@/lib/goal-live-normalizer';
 import { evaluateDangerousAttacksFirst25Level, evaluateDangerousAttacksHtIncrease, type LiveSignalSnapshot } from '@/lib/dangerous-attacks-signal';
+import { evaluateRollingMomentum, ROLLING_MOMENTUM_RULE_ID, ROLLING_MOMENTUM_RULE_VERSION } from '../../../../../services/collector/rolling-momentum.mjs';
 
 export const dynamic = 'force-dynamic';
 
@@ -124,16 +125,24 @@ async function persistLiveSnapshots(db: D1Database, events: StoredEvent[]): Prom
   }
   catch (error) { return { ...summary, saved: 0, errors: statements.length, error: error instanceof Error ? error.message : String(error) }; }
   const signalSummary = await persistDangerousAttackSignals(db, projected).catch((error) => ({ saved: 0, duplicates: 0, skipped: 0, qualitySkipped: 0, reasons: {}, error: error instanceof Error ? error.message : String(error) }));
-  summary.signalSaved = signalSummary.saved;
-  summary.signalDuplicates = signalSummary.duplicates;
-  summary.signalSkipped = signalSummary.skipped;
-  summary.signalQualitySkipped = signalSummary.qualitySkipped;
-  summary.signalReasons = signalSummary.reasons;
-  if ('error' in signalSummary) { summary.signalErrors = 1; summary.signalError = signalSummary.error; }
+  const momentumSummary = await persistRollingMomentumSignals(db, projected).catch((error) => ({ saved: 0, duplicates: 0, skipped: 0, qualitySkipped: 0, reasons: {}, error: error instanceof Error ? error.message : String(error) }));
+  for (const item of [signalSummary, momentumSummary]) {
+    summary.signalSaved += item.saved;
+    summary.signalDuplicates += item.duplicates;
+    summary.signalSkipped += item.skipped;
+    summary.signalQualitySkipped += item.qualitySkipped;
+    for (const [reason, count] of Object.entries(item.reasons)) summary.signalReasons[reason] = (summary.signalReasons[reason] ?? 0) + count;
+  }
+  if ('error' in signalSummary || 'error' in momentumSummary) { summary.signalErrors = 1; summary.signalError = 'error' in signalSummary ? signalSummary.error : momentumSummary.error; }
   return summary;
 }
 
 type SignalProjectionSummary = { saved: number; duplicates: number; skipped: number; qualitySkipped: number; reasons: Record<string, number> };
+type RollingSnapshotRow = {
+  capturedAt: string; elapsedMinute: number | null; attacksHome: number | null; attacksAway: number | null;
+  dangerousAttacksHome: number | null; dangerousAttacksAway: number | null; shotsOnTargetHome: number | null; shotsOnTargetAway: number | null;
+  cornersHome: number | null; cornersAway: number | null;
+};
 
 async function persistDangerousAttackSignals(db: D1Database, snapshots: ProjectedSnapshot[]): Promise<SignalProjectionSummary> {
   const summary: SignalProjectionSummary = { saved: 0, duplicates: 0, skipped: 0, qualitySkipped: 0, reasons: {} };
@@ -161,6 +170,63 @@ async function persistDangerousAttackSignals(db: D1Database, snapshots: Projecte
       signal.signalId, current.fixtureId, null, signal.ruleId, signal.ruleVersion, signal.signalKey,
       signal.detectedAt, signal.detectedMinute, JSON.stringify(signal.ruleParameters), JSON.stringify(signal.feature),
     ));
+    }
+  }
+  if (!statements.length) return summary;
+  const results = await db.batch(statements);
+  summary.saved = results.filter((result) => Number(result.meta?.changes ?? 0) > 0).length;
+  summary.duplicates = statements.length - summary.saved;
+  return summary;
+}
+
+function rollingPoint(row: RollingSnapshotRow) {
+  return {
+    minute: row.elapsedMinute, capturedAt: row.capturedAt,
+    home: { attacks: row.attacksHome, dangerousAttacks: row.dangerousAttacksHome, onTarget: row.shotsOnTargetHome, corners: row.cornersHome },
+    away: { attacks: row.attacksAway, dangerousAttacks: row.dangerousAttacksAway, onTarget: row.shotsOnTargetAway, corners: row.cornersAway },
+  };
+}
+
+/** Stores the first eligible case as evidence. The volatile active/faded state
+ * is deliberately evaluated by Collector from the latest Socket history. */
+async function persistRollingMomentumSignals(db: D1Database, snapshots: ProjectedSnapshot[]): Promise<SignalProjectionSummary> {
+  const summary: SignalProjectionSummary = { saved: 0, duplicates: 0, skipped: 0, qualitySkipped: 0, reasons: {} };
+  const statements: D1PreparedStatement[] = [];
+  for (const projected of snapshots) {
+    const current = projected.snapshot;
+    // Observe from the first valid minute. The shared evaluator itself only
+    // permits a signal after it has a causal 10/15 minute Socket window.
+    if (current.elapsedMinute === null || current.elapsedMinute < 0) { summary.skipped += 1; continue; }
+    const rows = (await db.prepare(`SELECT captured_at AS capturedAt,elapsed_minute AS elapsedMinute,
+      attacks_home AS attacksHome,attacks_away AS attacksAway,dangerous_attacks_home AS dangerousAttacksHome,
+      dangerous_attacks_away AS dangerousAttacksAway,shots_on_target_home AS shotsOnTargetHome,
+      shots_on_target_away AS shotsOnTargetAway,corners_home AS cornersHome,corners_away AS cornersAway
+      FROM live_snapshots WHERE fixture_id=? AND provider=? AND provider_fixture_id=? AND session_id=?
+      AND captured_at<=? AND elapsed_minute>=0 ORDER BY captured_at,id`).bind(
+      current.coreFixtureId, current.provider, current.providerFixtureId, projected.sessionId, current.capturedAt,
+    ).all<RollingSnapshotRow>()).results ?? [];
+    const evaluation = evaluateRollingMomentum(rows.map(rollingPoint));
+    for (const side of ['HOME', 'AWAY'] as const) {
+      const item = evaluation[side];
+      if (!item.eligible) { summary.skipped += 1; if (item.reason) summary.reasons[item.reason] = (summary.reasons[item.reason] ?? 0) + 1; continue; }
+      const feature = {
+        provider: current.provider, providerFixtureId: current.providerFixtureId, signalSide: side, phase: evaluation.phase,
+        triggerSnapshotId: current.sourceClientEventId, triggerProviderEventKey: current.providerEventKey,
+        detectedAt: current.capturedAt, detectedMinute: current.elapsedMinute, addedTime: current.addedTime,
+        windowStartMinute: item.startMinute, windowEndMinute: item.endMinute, windowKind: item.rule,
+        attackDelta: item.attackDelta, opponentAttackDelta: item.opponentAttackDelta, daDelta: item.daDelta, opponentDaDelta: item.opponentDaDelta,
+        pressureDiff: item.pressureDiff, firstFiveDa: item.firstFiveDa, lastFiveDa: item.lastFiveDa,
+        homeScore: current.homeScore, awayScore: current.awayScore,
+      };
+      statements.push(db.prepare(`INSERT OR IGNORE INTO live_signals
+        (id,fixture_id,team_id,signal_type,signal_version,signal_key,triggered_at,elapsed_minute,rule_parameters_json,feature_json)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`).bind(
+        `live:${ROLLING_MOMENTUM_RULE_ID}:${ROLLING_MOMENTUM_RULE_VERSION}:${current.coreFixtureId}:${evaluation.phase}:${side}`,
+        current.coreFixtureId, null, ROLLING_MOMENTUM_RULE_ID, ROLLING_MOMENTUM_RULE_VERSION, `${evaluation.phase}:${side}`,
+        current.capturedAt, current.elapsedMinute,
+        JSON.stringify({ phase: evaluation.phase, rapid10m: { attack: 15, dangerousAttacks: 7, differential: 6 }, sustained15m: { attack: 12, dangerousAttacks: 10, differential: 8 } }),
+        JSON.stringify(feature),
+      ));
     }
   }
   if (!statements.length) return summary;

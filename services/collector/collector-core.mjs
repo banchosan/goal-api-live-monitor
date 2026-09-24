@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { MAX_CONCURRENT_LIVE_FIXTURES } from './monitoring-limits.mjs';
+import { evaluateRollingMomentum, nextRollingMomentumState, rollingMomentumPoint } from './rolling-momentum.mjs';
 
 const TERMINAL = new Set(['FT', 'FINISHED', 'AFTER_ET', 'AFTER_PEN', 'CANCELLED', 'ABANDONED', 'AWARDED']);
 const providerTimestamp = (data) => data?.timestamp ?? data?.updated_at ?? data?.updatedAt ?? null;
@@ -9,6 +10,9 @@ const TOKEN_TIMEOUT_MS = 12_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const STABLE_CONNECTION_MS = 120_000;
 const DATA_GAP_THRESHOLD_MS = 120_000;
+// A dead provider stream can remain WebSocket-open for many minutes before it
+// finally reports 1006. Only an all-live-fixture stall may recycle it.
+const STALE_STREAM_THRESHOLD_MS = 120_000;
 // The scheduler deliberately subscribes before kickoff.  A normal provider
 // stream may have no match_update until the game begins, so 15 seconds was a
 // false-positive timeout that created needless unsubscribe/resubscribe churn.
@@ -16,9 +20,9 @@ const INITIAL_UPDATE_TIMEOUT_MS = 75_000;
 const MAX_INITIAL_UPDATE_RESUBSCRIBES = 2;
 
 export class GoalApiCollector {
-  constructor({ apiKey, fetchImpl = fetch, WebSocketImpl = WebSocket, persist = async () => {}, schedule = setTimeout, cancelSchedule = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, now = () => new Date().toISOString(), random = Math.random, heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS, stableConnectionMs = STABLE_CONNECTION_MS, dataGapThresholdMs = DATA_GAP_THRESHOLD_MS, initialUpdateTimeoutMs = INITIAL_UPDATE_TIMEOUT_MS, maxInitialUpdateResubscribes = MAX_INITIAL_UPDATE_RESUBSCRIBES } = {}) {
+  constructor({ apiKey, fetchImpl = fetch, WebSocketImpl = WebSocket, persist = async () => {}, schedule = setTimeout, cancelSchedule = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, now = () => new Date().toISOString(), random = Math.random, heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS, stableConnectionMs = STABLE_CONNECTION_MS, dataGapThresholdMs = DATA_GAP_THRESHOLD_MS, staleStreamThresholdMs = STALE_STREAM_THRESHOLD_MS, initialUpdateTimeoutMs = INITIAL_UPDATE_TIMEOUT_MS, maxInitialUpdateResubscribes = MAX_INITIAL_UPDATE_RESUBSCRIBES } = {}) {
     if (!apiKey) throw new Error('GOAL_API_KEYが未設定です');
-    Object.assign(this, { apiKey, fetchImpl, WebSocketImpl, persist, schedule, cancelSchedule, setIntervalImpl, clearIntervalImpl, now, random, heartbeatIntervalMs, stableConnectionMs, dataGapThresholdMs, initialUpdateTimeoutMs, maxInitialUpdateResubscribes });
+    Object.assign(this, { apiKey, fetchImpl, WebSocketImpl, persist, schedule, cancelSchedule, setIntervalImpl, clearIntervalImpl, now, random, heartbeatIntervalMs, stableConnectionMs, dataGapThresholdMs, staleStreamThresholdMs, initialUpdateTimeoutMs, maxInitialUpdateResubscribes });
     this.sessionId = null; this.connectionId = null; this.sequence = 0; this.socket = null;
     this.fixtures = new Map(); this.desired = false; this.authenticated = false;
     this.sessionStopped = true;
@@ -27,6 +31,7 @@ export class GoalApiCollector {
     this.connection = null; this.tokenRequestsByReason = {}; this.reconnectsByReason = {};
     this.currentConnectionIsReconnect = false;
     this.initialUpdateTimers = new Map();
+    this.staleStreamReconnectConnectionId = null;
   }
 
   status() { return { active: this.desired, sessionId: this.sessionId, connectionId: this.connectionId, connectionState: this.connectionState, authenticated: this.authenticated, reconnectAttempt: this.reconnectAttempt, goalApiRequests: this.goalApiRequests, tokenRequestsByReason: structuredClone(this.tokenRequestsByReason), reconnectsByReason: structuredClone(this.reconnectsByReason), lastError: this.lastError, lastSocketActivityAt: this.lastSocketActivityAt, connection: this.connection ? structuredClone(this.connection) : null, fixtures: [...this.fixtures.values()].map((fixture) => structuredClone(fixture)) }; }
@@ -81,10 +86,9 @@ export class GoalApiCollector {
   }
 
   async checkHealth() {
-    // Do not treat a quiet match as a broken socket. GOAL API may legitimately send
-    // no match_update for a while. Native close/error events own reconnection; a
-    // timer-driven unsubscribe or REST snapshot can interrupt a healthy stream and
-    // makes a static response look like live data.
+    // A quiet individual match is not a broken Socket: GOAL may legitimately
+    // send no update. However, all currently live fixtures going quiet at once
+    // is the observed open-but-dead-stream failure mode.
     const checkedAt = this.now();
     await Promise.all([...this.fixtures.values()].filter((fixture) => !fixture.ended).map(async (fixture) => {
       const gapMs = this.fixtureGapMs(fixture, checkedAt);
@@ -92,7 +96,27 @@ export class GoalApiCollector {
       fixture.lastGapReportedAt = checkedAt;
       await this.emit('data_gap_detected', fixture, { connectionId: this.connectionId, gapMs, thresholdMs: this.dataGapThresholdMs, lastMatchUpdateAt: fixture.lastReceivedAt, checkedAt, reason: 'match_update_silence' }, { source: 'system' });
     }));
+    await this.reconnectStaleLiveStream(checkedAt);
     return this.status();
+  }
+
+  async reconnectStaleLiveStream(checkedAt) {
+    if (!this.desired || !this.authenticated || !this.socket || this.socket.readyState !== 1) return;
+    if (this.staleStreamReconnectConnectionId === this.connectionId) return;
+    const candidates = [...this.fixtures.values()].filter((fixture) => !fixture.ended && isActiveLiveMinute(fixture.status) && fixture.lastReceivedAt);
+    if (!candidates.length) return;
+    const gaps = candidates.map((fixture) => this.fixtureGapMs(fixture, checkedAt));
+    if (!gaps.every((gapMs) => gapMs !== null && gapMs >= this.staleStreamThresholdMs)) return;
+    this.staleStreamReconnectConnectionId = this.connectionId;
+    this.lastError = 'all active live fixtures stopped receiving match_update';
+    await Promise.all(candidates.map((fixture) => this.emit('socket_stale', fixture, {
+      connectionId: this.connectionId, checkedAt, thresholdMs: this.staleStreamThresholdMs,
+      gapMs: this.fixtureGapMs(fixture, checkedAt), activeLiveFixtureCount: candidates.length,
+      reason: 'all_active_live_fixtures_stale',
+    }, { source: 'system' })));
+    // Let handleClose own the established reconnect/auth/resubscribe path.
+    // No REST snapshot request is made here.
+    try { this.socket.close(1000, 'collector_stale_stream'); } catch (error) { this.lastError = `stale stream close failed: ${String(error)}`; }
   }
 
   async stop(reason = 'manual_stop') {
@@ -127,7 +151,7 @@ export class GoalApiCollector {
   async connect(isReconnect) {
     if (!this.desired) return;
     this.stopHeartbeat();
-    this.connectionId = randomUUID(); this.currentConnectionIsReconnect = isReconnect; this.connectionState = isReconnect ? 'reconnecting' : 'connecting'; this.authenticated = false;
+    this.connectionId = randomUUID(); this.staleStreamReconnectConnectionId = null; this.currentConnectionIsReconnect = isReconnect; this.connectionState = isReconnect ? 'reconnecting' : 'connecting'; this.authenticated = false;
     this.connection = { connectionId: this.connectionId, connectAt: this.now(), authSuccessAt: null, firstMessageAt: null, lastMessageAt: null, firstMatchUpdateAt: null, lastMatchUpdateAt: null, disconnectAt: null, closeCode: null, closeReason: null, reconnectAttempt: this.reconnectAttempt, subscribedFixtureCount: 0, heartbeatSent: 0, heartbeatPong: 0, lastPingAt: null, lastPongAt: null, tokenReason: isReconnect ? 'reconnect' : 'initial' };
     await this.emitForActive('connection_start', { ...this.connectionMetadata(), isReconnect, attempt: this.reconnectAttempt, subscribedFixtureCount: this.activeFixtureCount() }, { source: 'system' });
     try {
@@ -187,31 +211,21 @@ export class GoalApiCollector {
     // after an explicit HT frame was received, then freezes at the newest
     // actual WebSocket state at/before 65'. No historical DB lookup or guess.
     if (fixture.htStats && minute !== null && minute > 45 && minute <= 65 && nextStats.length) { fixture.daCutoffStats = structuredClone(nextStats); fixture.daCutoffMinute = minute; }
-    // These are display checkpoints only. They use the same causal rule as
-    // the existing 25'/65' displays: retain the latest real socket state at
-    // or before the target, never a future value.
-    // Unlike daCutoffStats, these generic comparison checkpoints do not
-    // require an observed HT. They must never be used as a DA-signal
-    // baseline; they only let the UI compare two real socket observations.
-    if (minute !== null && minute > 45 && minute <= 65 && nextStats.length) {
-      fixture.minute65Stats = structuredClone(nextStats); fixture.minute65 = minute;
+    // A short rolling history is enough for the live card. The full raw and
+    // typed timeline remains durable elsewhere, so this is display state only.
+    if (minute !== null && nextStats.length) {
+      const point = rollingMomentumPoint(nextStats, minute, receivedAt);
+      fixture.momentumHistory = [...fixture.momentumHistory, point]
+        .filter((item) => item.minute === null || item.minute >= minute - 20);
+      const evaluation = evaluateRollingMomentum(fixture.momentumHistory);
+      const previous = fixture.rollingMomentum?.phase === evaluation.phase ? fixture.rollingMomentum : null;
+      fixture.rollingMomentum = {
+        phase: evaluation.phase,
+        currentMinute: evaluation.currentMinute,
+        HOME: nextRollingMomentumState(previous?.HOME, evaluation.HOME, receivedAt),
+        AWAY: nextRollingMomentumState(previous?.AWAY, evaluation.AWAY, receivedAt),
+      };
     }
-    if (minute !== null && minute > 45 && minute <= 70 && nextStats.length) {
-      fixture.minute70Stats = structuredClone(nextStats); fixture.minute70 = minute;
-    }
-    if (minute !== null && minute > 45 && minute <= 75 && nextStats.length) {
-      fixture.minute75Stats = structuredClone(nextStats); fixture.minute75 = minute;
-    }
-    if (minute !== null && minute > 45 && minute <= 80 && nextStats.length) {
-      fixture.minute80Stats = structuredClone(nextStats); fixture.minute80 = minute;
-    }
-    // A pre-target candidate (for example 46' as the latest state before
-    // 70') must never be presented as a completed comparison checkpoint.
-    // Retain the candidate causally, but expose completion independently.
-    if (minute !== null && minute >= 65) fixture.minute65Ready = true;
-    if (minute !== null && minute >= 70) fixture.minute70Ready = true;
-    if (minute !== null && minute >= 75) fixture.minute75Ready = true;
-    if (minute !== null && minute >= 80) fixture.minute80Ready = true;
     Object.assign(fixture, { home: data.match_hometeam_name ?? fixture.home, away: data.match_awayteam_name ?? fixture.away, homeScore: String(data.match_hometeam_score ?? fixture.homeScore), awayScore: String(data.match_awayteam_score ?? fixture.awayScore), status: nextStatus, stats: structuredClone(nextStats), updates: fixture.updates + 1, updatedAt: receivedAt, lastReceivedAt: receivedAt });
     fixture.subscriptionState = 'receiving';
     this.clearInitialUpdateTimer(fixture);
@@ -300,7 +314,7 @@ export class GoalApiCollector {
       if (gapMs !== null && gapMs >= this.dataGapThresholdMs) await this.emit('data_gap_detected', fixture, { ...closePayload, gapMs, thresholdMs: this.dataGapThresholdMs, lastMatchUpdateAt: fixture.lastReceivedAt, reason: 'socket_disconnected_after_update_gap' }, { source: 'system' });
       await this.emit('socket_disconnect', fixture, { ...closePayload, lastNormalReceivedAt: fixture.lastReceivedAt }, { source: 'websocket' });
     }));
-    if (this.desired) this.scheduleReconnect(`socket_close_${event.code}`); else this.connectionState = 'idle';
+    if (this.desired) this.scheduleReconnect(event.reason === 'collector_stale_stream' ? 'stale_stream_watchdog' : `socket_close_${event.code}`); else this.connectionState = 'idle';
   }
 
   scheduleReconnect(reason) {
@@ -343,11 +357,17 @@ function closeCategory(reason) {
   if (reason === 'socket_close_1001') return 'server_shutdown';
   if (reason === 'socket_close_4000') return 'activity_timeout';
   if (reason === 'socket_close_1006') return 'abnormal_closure';
+  if (reason === 'stale_stream_watchdog') return 'stale_stream_recycle';
   if (reason === 'connection_error') return 'token_or_connection_error';
   return 'other';
 }
 
-function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, lastGapReportedAt: null, ended: false, htStats: null, daCutoffStats: null, daCutoffMinute: null, koCutoffStats: null, koCutoffMinute: null, minute65Stats: null, minute65: null, minute65Ready: false, minute70Stats: null, minute70: null, minute70Ready: false, minute75Stats: null, minute75: null, minute75Ready: false, minute80Stats: null, minute80: null, minute80Ready: false, subscriptionState: 'not_subscribed', subscribeRequestedAt: null, subscribedAt: null, initialUpdateDeadlineAt: null, initialUpdateResubscribeAttempts: 0, lastRefreshAt: null }; }
+function isActiveLiveMinute(status) {
+  const minute = Number(String(status ?? '').replace(/\D.*/, ''));
+  return Number.isInteger(minute) && minute > 0 && minute < 90;
+}
+
+function initialState(fixture) { return { ...fixture, stats: [], updates: 0, updatedAt: null, lastReceivedAt: null, lastGapReportedAt: null, ended: false, htStats: null, daCutoffStats: null, daCutoffMinute: null, koCutoffStats: null, koCutoffMinute: null, momentumHistory: [], rollingMomentum: null, subscriptionState: 'not_subscribed', subscribeRequestedAt: null, subscribedAt: null, initialUpdateDeadlineAt: null, initialUpdateResubscribeAttempts: 0, lastRefreshAt: null }; }
 function normalizeFixtures(fixtures) { return Array.isArray(fixtures) ? fixtures.filter((fixture) => fixture?.id).map((fixture) => ({ id: String(fixture.id), league: String(fixture.league ?? ''), country: String(fixture.country ?? ''), home: String(fixture.home ?? 'Home'), away: String(fixture.away ?? 'Away'), homeScore: String(fixture.homeScore ?? '-'), awayScore: String(fixture.awayScore ?? '-'), status: String(fixture.status ?? 'LIVE'), kickoffUtc: fixture.kickoffUtc ? String(fixture.kickoffUtc) : null, // Preserve official GOAL IDs for a later manual Bookmark; never infer them from names.
   leagueId: fixture.leagueId ? String(fixture.leagueId) : null, homeTeamId: fixture.homeTeamId ? String(fixture.homeTeamId) : null, awayTeamId: fixture.awayTeamId ? String(fixture.awayTeamId) : null, monitorSource: String(fixture.monitorSource ?? 'manual') })) : []; }
 

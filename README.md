@@ -14,7 +14,7 @@ GOAL APIを使い、サッカーのLIVE試合をWebSocketで収集し、`Dangero
 4. 好調候補を確認し、必要なら一括Bookmarkする。一括選択は、5試合Formで合格したfixtureだけが対象。
 5. 過去の結果は **調子分析履歴** から再表示できる。必要なら保存済み候補だけでオッズ取得をresumeする。
 6. Bookmark済み試合はkickoff約3分前から既存SchedulerがCollectorへ渡す。
-7. **LIVE監視** でSocketのcurrent stats、25分・HT→65分のsignal、後半の区間比較を確認する。
+7. **LIVE監視** でSocketのcurrent stats、25分・HT→65分のsignal、継続圧力を確認する。
 8. 終了済み試合は **LIVE履歴** で確認する。Collectorの現在メモリから消えても、保存済みデータは残る。
 
 通常の起動はFinderの `.command` を使えばよく、Codexを毎回呼ぶ必要はありません。
@@ -81,16 +81,18 @@ current DA - actual HT DA >= 15
 
 を満たすとHOME/AWAY別に一度だけsignalを保存します。65分を超えた後も、65分以前の最後の表示値と発火分数を消しません。
 
-### 65→70 / 70→75 / 75→80 比較
+### LIVE Continuous Pressure
 
-LIVEカードには、必要な区間だけ開ける折りたたみ式の比較カードを表示します。
+固定の65→70 / 70→75 / 75→80表示は廃止し、監視開始直後から各`match_update`を履歴へ積み、直近のSocket時系列を再評価します。発火には捏造しない実測10分または15分windowが必要なので、kickoff前から監視できたfixtureは前半約10分後、後半開始から監視できたfixtureは後半約10分後から判定可能です。次のどちらかを満たすHOME/AWAYを継続圧力として表示します。
 
-- HT → 65
-- 65 → 70
-- 70 → 75
-- 75 → 80
+- **10分急加速**: Attack +15以上、DA +7以上、相手との差 +6以上、前後5分の両方でDAが増加。
+- **15分継続圧力**: Attack +12以上、DA +10以上、相手との差 +8以上、複数の5分区間でDAが増加。
 
-各targetについて、target以後の未来データは使わず、**target以前で最新のSocket更新**を採用します。DA、On/Off Target、Corners、Attacks、Possessionの終点値と増減を確認できます。これは画面上の再計算であり、区間別の重複データは保存しません。
+発火後も固定表示にはしません。最新の5分DAが+1以下なら **勢い低下**、条件は外れたがまだ増加している場合は **発火後・減速** と表示します。各試合・各sideの初回発火は`live_signals`へ証拠付きで保存し、全Socket時系列は従来どおり`live_snapshots`に残ります。manual snapshotは比較用として維持します。
+
+監視途中から入った場合は、過去の値を推測しません。10分または15分の因果的Socket履歴が実際に揃うまで「履歴待機」と表示します。つまり、kickoff前・開始直後から監視したfixtureなら25分時点のrolling判定が可能で、20分から初めて監視したfixtureなら25分に過去10分を捏造して発火させることはありません。
+
+このルールは、AiScore等の視覚的なモメンタムを、保存済みSocket時系列で再現できるかを確かめるための**仮説**です。利益性を主張するものではありません。
 
 ### Provider異常への扱い
 
@@ -174,6 +176,16 @@ node --experimental-strip-types scripts/live_analysis_dataset.ts
 - cumulative correction・欠損のanomaly flag
 
 未来snapshotはfeature計算に使いません。未来データを使うのは、ラベル（次の5/10/15分に得点したか）の列だけです。40試合規模はpipeline検証・探索には使えますが、利益性や再現性の証明には不十分です。
+
+### Historical replay / feature validation
+
+実装前に、過去に保存したraw `monitor_events`または`live_snapshots`を時系列順に再生し、ある特徴量・仮説が人間が確認した試合展開と一致するかを検証します。これは実務でいう **feature validation（特徴量検証）** / **historical replay（履歴再生）** です。
+
+- 実WebSocketや外部APIを使わず、当時その時点までに存在した観測値だけを使う。
+- 発火の有無だけでなく、発火後に継続したか、減速・失速したかを確認する。
+- RAWとtyped snapshotを突き合わせ、providerが返す最小統計で目標のモメンタムを再現可能かを確認する。
+
+この工程は、新しいsignalを増やす前のデータ品質・仕様検証として残します。
 
 ## 運用上の重要な学び
 
