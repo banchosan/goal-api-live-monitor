@@ -1,5 +1,115 @@
 # GOAL API Live Monitor
 
+> A local-first, real-time football data collection and analysis system built around WebSocket event streams, durable evidence, and reproducible time-series features.
+
+## Project overview
+
+GOAL API Live Monitor collects live football match updates, persists the original provider payloads, projects them into queryable typed snapshots, and evaluates transparent pressure signals without losing the raw evidence needed to audit them later.
+
+It is deliberately more than a score-display application. The project explores the backend and data-engineering problems behind a reliable sports-data workflow: real-time collection, defensive persistence, provider identity modelling, quality-aware normalization, observable recovery behaviour, and reproducible offline analysis.
+
+The system is designed for local research and portfolio demonstration. It does **not** claim predictive accuracy, profitability, or a production betting recommendation.
+
+## Why I built this
+
+Live-data products often look simple from the UI, but their backend data is messy: subscriptions can go silent, provider status can temporarily regress, statistics can be sparse or corrected, and a dashboard can make persisted history look missing after a process restart.
+
+I built this project to practice the engineering behind that problem: real-time collection, RAW evidence preservation, identity resolution, time-series analysis, data quality semantics, and reliable recovery.
+
+## Architecture
+
+```text
+                    GOAL API
+             REST + WebSocket events
+                        |
+                        v
+              Collector / Scheduler
+          reconnect, backoff, re-subscribe
+                        |
+        +---------------+----------------+
+        |                                |
+        v                                v
+ raw JSONL                     monitor_events (D1)
+ immutable evidence             durable event record
+        |                                |
+        +---------------+----------------+
+                        |
+                        v
+        Normalizer + provider identity resolution
+                        |
+                        v
+              live_snapshots (typed D1 timeline)
+                        |
+             +----------+-----------+
+             |                      |
+             v                      v
+     live_signals             Dashboard / LIVE history
+     reproducible evidence    current state + persisted state
+             |
+             v
+    read-only analysis dataset / backtest features
+```
+
+PRE-MATCH data follows an adjacent, intentionally separate path:
+
+```text
+upcoming fixtures -> recent-form analysis -> qualified candidates
+                  -> odds / results -> typed facts
+```
+
+The two pipelines join only through a safely resolved `core_fixture_id`; provider IDs are never treated as interchangeable.
+
+## Tech stack
+
+- TypeScript and JavaScript (Node.js)
+- Next.js / React dashboard (Vinext build)
+- Cloudflare D1-compatible local SQLite / Miniflare
+- WebSocket and REST integrations
+- SQL-oriented normalized data model
+- Python utilities for offline analysis and local D1 verification
+- GitHub Actions for secret hygiene and deterministic test/build checks
+
+## Engineering highlights
+
+- **RAW-first persistence:** each `match_update` is retained before typed projection or signal evaluation.
+- **Safe provider identity:** canonical provider IDs are required; name-only merges are prohibited.
+- **Causal time-series analysis:** checkpoints select the latest observation at or before the target; no future state leaks into features.
+- **Quality-aware semantics:** `NULL` remains unknown; cumulative-stat decreases are provider corrections, not negative pressure.
+- **Reliable live operation:** reconnect/backoff, heartbeat, re-authentication, re-subscription, data-gap events, and stale-stream recovery are observable.
+- **Signal versus population:** signals retain trigger evidence while all snapshots remain available as a non-signal control population.
+
+## Portfolio guide
+
+The detailed implementation and operator reference begins below. For a short technical tour, start with:
+
+- [Architecture and data boundaries](docs/architecture.md)
+- [LIVE signal rules and quality constraints](docs/live-signal-rules.md)
+- [Local operation](docs/local-operation.md)
+- [Data architecture](docs/data-architecture.md)
+- [Local D1 schema operations](docs/local-d1-migrations.md)
+
+## Setup and validation
+
+Prerequisites: Node.js `>= 22.13.0` and a local `.env` copied from `.env.example`. Tests do not call real provider APIs or open a WebSocket.
+
+```bash
+git clone <repository-url>
+cd goal-api-live-monitor/apps/web-dashboard
+npm ci
+npm test
+npm run build
+```
+
+The repository intentionally excludes local credentials, raw collection data, databases, logs, backups, generated build output, and dependency directories. `.env.example` contains placeholders only.
+
+## Screenshots
+
+No dashboard screenshot is committed yet. A real, redacted screenshot can be added here later; generated or mock screenshots are intentionally not used.
+
+---
+
+## Detailed implementation and operation reference
+
 GOAL APIを使い、サッカーのLIVE試合をWebSocketで収集し、`Dangerous Attacks`・shots・cornersなどの時系列から、あとで検証できる形で保存するローカル専用プロジェクトです。
 
 目的は、単に通知を出すことではありません。事前の直近5試合Form、LIVEの攻撃圧、得点・最終結果を同じfixtureに安全に結び、将来のパターン発見・バックテスト・ML用datasetを作れるようにすることです。
@@ -163,7 +273,7 @@ GOALとAPI-Footballのcross-provider統合は別処理です。fixture identity 
 保存済み`live_snapshots`から、1行 = `fixture × side × checkpoint` のCSVを作れます。書き込み・外部API・WebSocket接続はしません。
 
 ```bash
-cd /Users/tsukasa/Desktop/goal-api-live-monitor
+cd goal-api-live-monitor
 node --experimental-strip-types scripts/live_analysis_dataset.ts
 ```
 
@@ -204,7 +314,7 @@ node --experimental-strip-types scripts/live_analysis_dataset.ts
 Dashboard開発起動:
 
 ```bash
-cd /Users/tsukasa/Desktop/goal-api-live-monitor/apps/web-dashboard
+cd goal-api-live-monitor/apps/web-dashboard
 npm run dev
 ```
 

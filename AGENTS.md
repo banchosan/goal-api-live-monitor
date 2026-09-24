@@ -5,9 +5,9 @@ and any automated agents interacting with this repository.
 
 Rules (summary):
 
-- Repository root: /Users/tsukasa/Desktop/goal-api-live-monitor
-- The directory /Users/tsukasa/Documents/ChatGPT/try is legacy/archive and must not be
-  used as a runtime dependency or target for changes.
+- Repository root: the directory containing this `AGENTS.md` file.
+- Do not rely on machine-specific paths or external archive directories as runtime
+  dependencies or targets for changes.
 - All runtime secrets must be stored only in the root `.env` file.
 - The root `.env` file MUST NOT be added, committed, or pushed to git.
 - Subdirectory `.env` files (e.g. `apps/web-dashboard/.env`, `scripts/.env`) must not

@@ -2,8 +2,8 @@
 """
 Analyze betting rules using saved local data.
 
-This is a port of /Users/tsukasa/Documents/ChatGPT/try/analyze_betting_rules.py
-with absolute paths removed and basic CLI arguments.
+This is a repository-relative port of an earlier analysis utility, with basic
+CLI arguments and no machine-specific paths.
 
 Usage:
   python3 scripts/analyze_betting_rules.py --date 2026-09-03
