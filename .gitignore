@@ -20,5 +20,10 @@ scripts/.env
 *.key
 *.p12
 backup-*.bundle
+*.bundle
+*.sqlite
+*.sqlite3
+*.db
+*.jsonl
 **/.env
 .env.local
