@@ -1,20 +1,26 @@
 # GOAL API Live Monitor
 
-> A local-first, real-time football data collection and analysis system built around WebSocket event streams, durable evidence, and reproducible time-series features.
+> WebSocketで受信するサッカーLIVEデータを、RAW証跡を残したまま永続化・正規化し、時系列分析とpressure signal検出へつなげるローカルファーストのデータ収集・分析システムです。
 
-## Project overview
+## プロジェクト概要
 
-GOAL API Live Monitor collects live football match updates, persists the original provider payloads, projects them into queryable typed snapshots, and evaluates transparent pressure signals without losing the raw evidence needed to audit them later.
+GOAL API Live Monitorは、試合の`match_update`をWebSocketで収集し、provider payloadをRAWとして保存したうえで、検索可能なtyped snapshotへ投影します。保存済み時系列から、説明可能な攻撃圧signalとread-only分析datasetを構築できます。
 
-It is deliberately more than a score-display application. The project explores the backend and data-engineering problems behind a reliable sports-data workflow: real-time collection, defensive persistence, provider identity modelling, quality-aware normalization, observable recovery behaviour, and reproducible offline analysis.
+単なるスコア表示ではなく、real-time collection、defensive persistence、provider identity、quality-aware normalization、recovery observability、reproducible analysisを扱うBackend / Data Engineeringプロジェクトです。
 
-The system is designed for local research and portfolio demonstration. It does **not** claim predictive accuracy, profitability, or a production betting recommendation.
+ローカル研究・ポートフォリオ用途のシステムであり、予測精度・収益性・ベッティング上の優位性を主張するものではありません。
 
-## Why I built this
+## 開発した理由
 
-Live-data products often look simple from the UI, but their backend data is messy: subscriptions can go silent, provider status can temporarily regress, statistics can be sparse or corrected, and a dashboard can make persisted history look missing after a process restart.
+LIVEデータのUIはシンプルに見えても、実際にはsubscriptionの無応答、provider statusの一時的な巻戻り、統計値の欠損・訂正、再起動後に履歴が消えたように見える問題が発生します。
 
-I built this project to practice the engineering behind that problem: real-time collection, RAW evidence preservation, identity resolution, time-series analysis, data quality semantics, and reliable recovery.
+このプロジェクトでは、そうした実運用上の問題を前提に、RAW evidence preservation、identity resolution、causal time-series analysis、data-quality semantics、reconnect / recoveryを設計・実装しています。
+
+## Dashboard
+
+![GOAL API Live Monitor dashboard](docs/images/live-dashboard.png)
+
+実際のLIVE監視画面です。WebSocketからの更新を時系列として扱い、Attack / Dangerous Attacksをもとに、継続的なpressure conditionを再評価します。
 
 ## Architecture
 
@@ -50,16 +56,16 @@ I built this project to practice the engineering behind that problem: real-time 
     read-only analysis dataset / backtest features
 ```
 
-PRE-MATCH data follows an adjacent, intentionally separate path:
+PRE-MATCHデータは、LIVEとは意図的に分離した次の経路を通ります。
 
 ```text
 upcoming fixtures -> recent-form analysis -> qualified candidates
                   -> odds / results -> typed facts
 ```
 
-The two pipelines join only through a safely resolved `core_fixture_id`; provider IDs are never treated as interchangeable.
+2つのpipelineは、安全に解決された`core_fixture_id`を通じてのみJOINします。provider IDを互換なものとして扱うことはありません。
 
-## Tech stack
+## Tech Stack
 
 - TypeScript and JavaScript (Node.js)
 - Next.js / React dashboard (Vinext build)
@@ -69,28 +75,25 @@ The two pipelines join only through a safely resolved `core_fixture_id`; provide
 - Python utilities for offline analysis and local D1 verification
 - GitHub Actions for secret hygiene and deterministic test/build checks
 
-## Engineering highlights
+## Engineering Highlights
 
-- **RAW-first persistence:** each `match_update` is retained before typed projection or signal evaluation.
-- **Safe provider identity:** canonical provider IDs are required; name-only merges are prohibited.
-- **Causal time-series analysis:** checkpoints select the latest observation at or before the target; no future state leaks into features.
-- **Quality-aware semantics:** `NULL` remains unknown; cumulative-stat decreases are provider corrections, not negative pressure.
-- **Reliable live operation:** reconnect/backoff, heartbeat, re-authentication, re-subscription, data-gap events, and stale-stream recovery are observable.
-- **Signal versus population:** signals retain trigger evidence while all snapshots remain available as a non-signal control population.
+- **RAW-first persistence:** typed projectionやsignal判定の前に、各`match_update`を証跡として残します。
+- **Safe provider identity:** provider IDをcanonical evidenceとし、name-only mergeを禁止します。
+- **Causal checkpoint:** target minute以前の最新観測だけを使い、未来データをfeatureへ混入させません。
+- **`NULL != 0`:** 欠損値をゼロ扱いせず、累積統計の減少をprovider correctionとして扱います。
+- **Reliable live operation:** reconnect/backoff、heartbeat、re-authentication、re-subscribe、data-gap、stale-stream recoveryを観測可能にします。
+- **Signalとcontrol populationの分離:** signalだけでなく全snapshotを保存し、後から非signal群との比較を可能にします。
 
-## Portfolio guide
+## Testing / CI
 
-The detailed implementation and operator reference begins below. For a short technical tour, start with:
+- Node test suite: **180 tests**
+- Python test suite: **5 tests**
+- production build verification
+- GitHub Actionsによるtest / build / secret scan
 
-- [Architecture and data boundaries](docs/architecture.md)
-- [LIVE signal rules and quality constraints](docs/live-signal-rules.md)
-- [Local operation](docs/local-operation.md)
-- [Data architecture](docs/data-architecture.md)
-- [Local D1 schema operations](docs/local-d1-migrations.md)
+CIは検証済みのNode.js `26.8.1`を使用します。packageの対応下限はNode.js `22.13.0`です。
 
-## Setup and validation
-
-Prerequisites: Node.js `>= 22.13.0` and a local `.env` copied from `.env.example`. Tests do not call real provider APIs or open a WebSocket.
+## Setup
 
 ```bash
 git clone <repository-url>
@@ -100,15 +103,22 @@ npm test
 npm run build
 ```
 
-The repository intentionally excludes local credentials, raw collection data, databases, logs, backups, generated build output, and dependency directories. `.env.example` contains placeholders only.
+ローカルCollectorを実際に動かす場合だけ、`.env.example`から`.env`を作成してprovider credentialsを設定します。テストとbuildは実API・実WebSocketを使用しません。
 
-## Screenshots
+## Documentation
 
-No dashboard screenshot is committed yet. A real, redacted screenshot can be added here later; generated or mock screenshots are intentionally not used.
+- [Architecture and data boundaries](docs/architecture.md)
+- [LIVE signal rules and quality constraints](docs/live-signal-rules.md)
+- [Local operation](docs/local-operation.md)
+- [Data architecture](docs/data-architecture.md)
+- [Local D1 schema operations](docs/local-d1-migrations.md)
 
 ---
 
-## Detailed implementation and operation reference
+<details>
+<summary>詳細な実装・ローカル運用リファレンス</summary>
+
+このセクションは既存の運用・仕様情報を保全するために残しています。初見の方は上記のOverview、Architecture、Engineering Highlights、Documentationから読むことを推奨します。
 
 GOAL APIを使い、サッカーのLIVE試合をWebSocketで収集し、`Dangerous Attacks`・shots・cornersなどの時系列から、あとで検証できる形で保存するローカル専用プロジェクトです。
 
@@ -347,3 +357,5 @@ Gitは「毎日必須」ではなく、意味のある安全な区切りでcommi
 - API key、rawデータ、local D1はcommitしない。
 
 このプロジェクトでは、Collectorや保存構造に関わる変更は特にcommitを推奨します。画面上の一つの機能だけの変更でも、関連するテストが通った時点で独立commitにすると、問題発生時に原因を追いやすくなります。
+
+</details>
