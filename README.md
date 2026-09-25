@@ -116,7 +116,7 @@ npm run build
 ---
 
 <details>
-<summary>追加の設計ノート</summary>
+<summary>Technical Details（詳細技術仕様）</summary>
 
 初見の方は上記のOverview、Architecture、Engineering Highlights、Documentationから読むことを推奨します。
 
@@ -125,6 +125,27 @@ GOAL APIを使い、サッカーのLIVE試合をWebSocketで収集し、`Dangero
 目的は、単に通知を出すことではありません。事前の直近5試合Form、LIVEの攻撃圧、得点・最終結果を同じfixtureに安全に結び、将来のパターン発見・バックテスト・ML用datasetを作れるようにすることです。
 
 > 現在は **ローカルD1 / local Collector / local Dashboard** を対象とし、production・remote D1は通常運用で使いません。
+
+## 画面の役割
+
+| 画面 | 用途 | source of truth |
+| --- | --- | --- |
+| LIVE監視 | 今まさにSocketで受信している試合の確認・手動snapshot・signal表示 | Collector current state + 保存済みfallback |
+| 24時間分析 | 今後24時間のfixture、5試合Form分析、好調候補の一括Bookmark、オッズ取得 | GOAL API取得結果・保存済みForm run |
+| 調子分析履歴 | 過去の5試合Form run、候補の再確認・オッズresume | `form_analysis_runs` |
+| 管理 | Bookmark、監視対象外、AUTO_FORMの反映 | `fixture_bookmarks` / exclusions |
+| LIVE履歴 | 完走・中断済みの試合を後から確認 | `live_snapshots` / `live_signals` / `monitor_events` |
+| オッズ一覧・分析データ | 保存済みオッズ・結果・分析用出力 | raw + typed PRE-MATCH tables |
+
+### Bookmark と監視対象外は別物
+
+- **Bookmark**: kickoff前から自動監視の予約にする。Schedulerが対象にする。
+- **LIVE画面から外す / 監視対象外**: Bookmark・raw・D1履歴を残したまま、今後の自動監視とLIVEカード表示だけを外す。
+- **Bookmarkを外す**: 予約そのものを解除する。ただし、すでに集めた履歴は削除しない。
+
+管理画面では日付（JST）を選び、00:00→23:59のkickoff順でBookmarkを表示します。そこで複数選択して「LIVE画面から外す」を行ってもBookmarkは残ります。
+
+LIVE監視画面でも、各カードを個別に選択するか「表示中の全試合を選択」を使って、選んだ試合だけを一括で監視対象外へ移せます。これは左の「監視開始用」選択とは別で、Bookmarkと収集済み履歴は残ります。
 
 ## LIVEデータの流れ
 
