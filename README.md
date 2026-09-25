@@ -116,49 +116,15 @@ npm run build
 ---
 
 <details>
-<summary>詳細な実装・ローカル運用リファレンス</summary>
+<summary>追加の設計ノート</summary>
 
-このセクションは既存の運用・仕様情報を保全するために残しています。初見の方は上記のOverview、Architecture、Engineering Highlights、Documentationから読むことを推奨します。
+初見の方は上記のOverview、Architecture、Engineering Highlights、Documentationから読むことを推奨します。
 
 GOAL APIを使い、サッカーのLIVE試合をWebSocketで収集し、`Dangerous Attacks`・shots・cornersなどの時系列から、あとで検証できる形で保存するローカル専用プロジェクトです。
 
 目的は、単に通知を出すことではありません。事前の直近5試合Form、LIVEの攻撃圧、得点・最終結果を同じfixtureに安全に結び、将来のパターン発見・バックテスト・ML用datasetを作れるようにすることです。
 
-> 現在は **ローカルD1 / local Collector / local Dashboard** 専用です。production・remote D1はこの通常運用では使いません。
-
-## 日常の使い方
-
-1. Finderで `操作/` を開き、CollectorとDashboardを起動する。
-2. Dashboardの **24時間分析** で今後24時間のfixtureを取得する。
-3. 必要なら対象リーグを絞り、直近5試合Form分析を実行する。
-4. 好調候補を確認し、必要なら一括Bookmarkする。一括選択は、5試合Formで合格したfixtureだけが対象。
-5. 過去の結果は **調子分析履歴** から再表示できる。必要なら保存済み候補だけでオッズ取得をresumeする。
-6. Bookmark済み試合はkickoff約3分前から既存SchedulerがCollectorへ渡す。
-7. **LIVE監視** でSocketのcurrent stats、25分・HT→65分のsignal、継続圧力を確認する。
-8. 終了済み試合は **LIVE履歴** で確認する。Collectorの現在メモリから消えても、保存済みデータは残る。
-
-通常の起動はFinderの `.command` を使えばよく、Codexを毎回呼ぶ必要はありません。
-
-## 画面の役割
-
-| 画面 | 用途 | source of truth |
-| --- | --- | --- |
-| LIVE監視 | 今まさにSocketで受信している試合の確認・手動snapshot・signal表示 | Collector current state + 保存済みfallback |
-| 24時間分析 | 今後24時間のfixture、5試合Form分析、好調候補の一括Bookmark、オッズ取得 | GOAL API取得結果・保存済みForm run |
-| 調子分析履歴 | 過去の5試合Form run、候補の再確認・オッズresume | `form_analysis_runs` |
-| 管理 | Bookmark、監視対象外、AUTO_FORMの反映 | `fixture_bookmarks` / exclusions |
-| LIVE履歴 | 完走・中断済みの試合を後から確認 | `live_snapshots` / `live_signals` / `monitor_events` |
-| オッズ一覧・分析データ | 保存済みオッズ・結果・分析用出力 | raw + typed PRE-MATCH tables |
-
-### Bookmark と監視対象外は別物
-
-- **Bookmark**: kickoff前から自動監視の予約にする。Schedulerが対象にする。
-- **LIVE画面から外す / 監視対象外**: Bookmark・raw・D1履歴を残したまま、今後の自動監視とLIVEカード表示だけを外す。
-- **Bookmarkを外す**: 予約そのものを解除する。ただし、すでに集めた履歴は削除しない。
-
-管理画面では日付（JST）を選び、00:00→23:59のkickoff順でBookmarkを表示します。そこで複数選択して「LIVE画面から外す」を行ってもBookmarkは残ります。
-
-LIVE監視画面でも、各カードを個別に選択するか「表示中の全試合を選択」を使って、選んだ試合だけを一括で監視対象外へ移せます。これは左の「監視開始用」選択とは別で、Bookmarkと収集済み履歴は残ります。
+> 現在は **ローカルD1 / local Collector / local Dashboard** を対象とし、production・remote D1は通常運用で使いません。
 
 ## LIVEデータの流れ
 
@@ -345,17 +311,5 @@ scripts/live_delta_report.ts                             # checkpoint/delta repo
 ```
 
 `.env`、local D1、raw JSONL、`node_modules`はGitへ含めません。
-
-## Git運用
-
-Gitは「毎日必須」ではなく、意味のある安全な区切りでcommitします。
-
-- 画面の小改善、Collectorの挙動変更、schema変更、分析script追加など、あとで戻したくなりそうな単位でcommitする。
-- 実装 → テスト → production build → commit が基本。
-- 調査だけ、READMEの軽微な誤字、未完の実験は無理にcommitしない。
-- commitしなくてもファイル変更はローカルに残るが、PC障害・誤操作・別変更の混入から守る履歴にはならない。
-- API key、rawデータ、local D1はcommitしない。
-
-このプロジェクトでは、Collectorや保存構造に関わる変更は特にcommitを推奨します。画面上の一つの機能だけの変更でも、関連するテストが通った時点で独立commitにすると、問題発生時に原因を追いやすくなります。
 
 </details>

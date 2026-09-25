@@ -27,3 +27,7 @@ backup-*.bundle
 *.jsonl
 **/.env
 .env.local
+
+# Personal local launch helpers and legacy captured odds display data.
+/操作/
+/apps/web-dashboard/public/odds-data.json
